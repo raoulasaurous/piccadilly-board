@@ -82,24 +82,29 @@
   .colhead{display:flex;align-items:baseline;gap:.9cqw;margin-bottom:1.2cqw}
   .colhead .dir{font-size:1.95cqw;font-weight:600;letter-spacing:.01em;white-space:nowrap}
   .colhead .towards{font-size:1.3cqw;font-weight:300;color:var(--dim);white-space:nowrap}
-  .rows{position:relative;display:flex;flex-direction:column;justify-content:space-between;flex:1}
-  .rows::before{
+  .rows{position:relative;display:flex;flex-direction:column;justify-content:flex-start;flex:1}
+  /* A fixed row height, so five trains sit at a readable rhythm AND the two
+     columns line up with each other even when one has fewer trains. */
+  .row{position:relative;display:flex;align-items:center;gap:1.4cqw;min-width:0;flex:0 0 6.4cqw}
+  /* The joining line is drawn per row, from this dot down to the next one, so
+     it always stops at the last train instead of running into empty space. */
+  .row:not(:last-child)::before{
     content:"";
     position:absolute;
-    left:.42cqw;
-    top:1.6cqw;
-    bottom:1.6cqw;
+    left:.475cqw;
+    top:50%;
+    height:6.4cqw;
     width:1px;
+    margin-left:-.5px;
     background:var(--dot);
     opacity:.5;
   }
-  .row{display:flex;align-items:center;gap:1.4cqw;min-width:0}
   .dot{
     position:relative;
     z-index:1;
     flex:0 0 auto;
-    width:.85cqw;
-    height:.85cqw;
+    width:.95cqw;
+    height:.95cqw;
     min-width:6px;
     min-height:6px;
     border-radius:50%;
@@ -108,13 +113,13 @@
   .dest{
     flex:1;
     min-width:0;
-    font-size:1.8cqw;
+    font-size:2cqw;
     font-weight:400;
     white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
   }
-  .mins{flex:0 0 auto;font-size:1.8cqw;font-weight:500;color:var(--time);font-variant-numeric:tabular-nums}
+  .mins{flex:0 0 auto;font-size:2cqw;font-weight:500;color:var(--time);font-variant-numeric:tabular-nums}
   .empty{font-size:1.6cqw;color:var(--dimmer)}
 
   /* ---- footer ---- */
@@ -163,8 +168,8 @@
     .colhead .dir{font-size:16px}
     .colhead .towards{font-size:12px}
     .rows{gap:0}
-    .rows::before{left:4px;top:14px;bottom:14px}
-    .row{gap:12px;padding:6px 0}
+    .row{gap:12px;padding:6px 0;flex:0 0 auto;height:34px}
+    .row:not(:last-child)::before{left:4px;height:34px}
     .dot{width:8px;height:8px}
     .dest,.mins{font-size:15px}
     .empty{font-size:14px}
