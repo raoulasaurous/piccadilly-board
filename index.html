@@ -1,0 +1,384 @@
+<title>Piccadilly Line Board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap">
+<style>
+  /* ------------------------------------------------------------------
+     CHANGE THE STATION HERE  ->  see the CONFIG block in the script
+     ------------------------------------------------------------------ */
+  :root{
+    --page:#1B1C1F;
+    --board:#0A0B0D;
+    --line:#FFFFFF;
+    --dim:#8E959E;
+    --dimmer:#5F6670;
+    --rule:#1F4FA8;
+    --dot:#2F6FD0;
+    --time:#E9A23B;
+    --good:#3DBF63;
+    --hair:#20232A;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:var(--page);
+    color:var(--line);
+    font-family:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:min(4vw,32px);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* The board holds a fixed 16:9 landscape shape, like the framed screen it
+     is copying, and every size inside it is a share of the board's own width
+     (cqw). So it scales as one picture instead of reflowing. */
+  .board{
+    width:100%;
+    max-width:1180px;
+    aspect-ratio:16/9;
+    container-type:size;
+    background:var(--board);
+    border-radius:6px;
+    padding:3.1cqw 3.4cqw 2.5cqw;
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* ---- header ---- */
+  .head{display:flex;align-items:flex-start;justify-content:space-between;gap:2cqw}
+  .ident{display:flex;align-items:center;gap:1.6cqw;min-width:0}
+  .roundel{flex:0 0 auto;width:4.7cqw;height:auto;display:block}
+  .names{min-width:0}
+  .lineName{
+    font-size:3.7cqw;
+    font-weight:400;
+    letter-spacing:.005em;
+    line-height:1.05;
+    margin:0;
+    white-space:nowrap;
+  }
+  .from{margin:.25cqw 0 0;font-size:1.65cqw;font-weight:300;color:var(--dim)}
+  .clockwrap{text-align:right;flex:0 0 auto}
+  .clock{
+    font-size:3.7cqw;
+    font-weight:400;
+    line-height:1.05;
+    font-variant-numeric:tabular-nums;
+    margin:0;
+  }
+  .updated{
+    margin:.3cqw 0 0;
+    font-size:1.1cqw;
+    color:var(--dimmer);
+    font-variant-numeric:tabular-nums;
+  }
+  .rule{height:.19cqw;min-height:2px;background:var(--rule);border-radius:1px;margin:2.1cqw 0 2cqw}
+
+  /* ---- the two columns ---- */
+  .cols{display:grid;grid-template-columns:1fr 1px 1fr;gap:3cqw;flex:1;min-height:0}
+  .divider{background:var(--hair)}
+  .col{min-width:0;display:flex;flex-direction:column}
+  .colhead{display:flex;align-items:baseline;gap:.9cqw;margin-bottom:1.2cqw}
+  .colhead .dir{font-size:1.95cqw;font-weight:600;letter-spacing:.01em;white-space:nowrap}
+  .colhead .towards{font-size:1.3cqw;font-weight:300;color:var(--dim);white-space:nowrap}
+  .rows{position:relative;display:flex;flex-direction:column;justify-content:space-between;flex:1}
+  .rows::before{
+    content:"";
+    position:absolute;
+    left:.42cqw;
+    top:1.6cqw;
+    bottom:1.6cqw;
+    width:1px;
+    background:var(--dot);
+    opacity:.5;
+  }
+  .row{display:flex;align-items:center;gap:1.4cqw;min-width:0}
+  .dot{
+    position:relative;
+    z-index:1;
+    flex:0 0 auto;
+    width:.85cqw;
+    height:.85cqw;
+    min-width:6px;
+    min-height:6px;
+    border-radius:50%;
+    background:var(--dot);
+  }
+  .dest{
+    flex:1;
+    min-width:0;
+    font-size:1.8cqw;
+    font-weight:400;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .mins{flex:0 0 auto;font-size:1.8cqw;font-weight:500;color:var(--time);font-variant-numeric:tabular-nums}
+  .empty{font-size:1.6cqw;color:var(--dimmer)}
+
+  /* ---- footer ---- */
+  .foot{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:2cqw;
+    border-top:1px solid var(--hair);
+    margin-top:2cqw;
+    padding-top:1.5cqw;
+    font-size:1.45cqw;
+  }
+  .status{display:flex;align-items:center;gap:.85cqw;min-width:0}
+  .status .lbl{color:var(--dim);font-weight:300}
+  .status .val{color:var(--good);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .status .val.bad{color:var(--time)}
+  .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block}
+  .src{color:var(--dimmer);font-weight:300;flex:0 0 auto;display:flex;align-items:center;gap:1cqw}
+  .mode{
+    font-size:.82em;
+    letter-spacing:.09em;
+    text-transform:uppercase;
+    color:var(--dimmer);
+    border:1px solid var(--hair);
+    border-radius:99px;
+    padding:.2em .7em;
+  }
+  .mode.live{color:var(--good);border-color:rgba(61,191,99,.4)}
+
+  /* On a phone the 16:9 shape would make the type unreadable, so below this
+     width the board stops holding its proportion and stacks instead. */
+  @media (max-width:700px){
+    body{align-items:flex-start;padding:14px}
+    .board{aspect-ratio:auto;container-type:normal;padding:22px 20px 18px;gap:0}
+    .head{gap:14px}
+    .roundel{width:42px}
+    .lineName{font-size:26px}
+    .from{font-size:14px;margin-top:2px}
+    .clock{font-size:26px}
+    .updated{font-size:11px;margin-top:3px}
+    .rule{margin:16px 0 14px;height:2px}
+    .cols{grid-template-columns:1fr;gap:18px}
+    .divider{height:1px;width:100%}
+    .colhead{gap:8px;margin-bottom:8px}
+    .colhead .dir{font-size:16px}
+    .colhead .towards{font-size:12px}
+    .rows{gap:0}
+    .rows::before{left:4px;top:14px;bottom:14px}
+    .row{gap:12px;padding:6px 0}
+    .dot{width:8px;height:8px}
+    .dest,.mins{font-size:15px}
+    .empty{font-size:14px}
+    .foot{font-size:12.5px;margin-top:16px;padding-top:12px;gap:12px}
+    .status{gap:8px}
+    .src{gap:10px}
+  }
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="board">
+
+  <div class="head">
+    <div class="ident">
+      <svg class="roundel" viewBox="0 0 60 50" role="img" aria-label="London Underground roundel">
+        <circle cx="30" cy="25" r="18.5" fill="none" stroke="#D8231E" stroke-width="7"></circle>
+        <rect x="2" y="20.5" width="56" height="9" fill="#003688"></rect>
+        <text x="30" y="27.4" text-anchor="middle" font-family="Hanken Grotesk, sans-serif"
+              font-size="5.6" font-weight="600" letter-spacing="0.02em" fill="#FFFFFF">PICCADILLY</text>
+      </svg>
+      <div class="names">
+        <h1 class="lineName">PICCADILLY LINE</h1>
+        <p class="from">From <span id="stationName">Arsenal</span></p>
+      </div>
+    </div>
+    <div class="clockwrap">
+      <p class="clock" id="clock">10:24</p>
+      <p class="updated">Last updated: <span id="updated">10:24</span></p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <div class="cols">
+    <section class="col">
+      <div class="colhead">
+        <span class="dir" id="dirAName">SOUTHBOUND</span>
+        <span class="towards">towards <span id="dirATowards">Heathrow</span></span>
+      </div>
+      <div class="rows" id="colA"></div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section class="col">
+      <div class="colhead">
+        <span class="dir" id="dirBName">NORTHBOUND</span>
+        <span class="towards">towards <span id="dirBTowards">Cockfosters</span></span>
+      </div>
+      <div class="rows" id="colB"></div>
+    </section>
+  </div>
+
+  <div class="foot">
+    <div class="status">
+      <span class="lbl">Status:</span>
+      <svg class="tick" viewBox="0 0 20 20" role="img" aria-label="status icon" id="tick">
+        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"
+                style="color:var(--good)"></circle>
+        <path d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round" style="color:var(--good)"></path>
+      </svg>
+      <span class="val" id="status">Good Service</span>
+    </div>
+    <div class="src">
+      <span class="mode" id="mode">sample data</span>
+      <span>tfl.gov.uk</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// CONFIG - change these three lines for a different station or line.
+// Find a station id: https://api.tfl.gov.uk/StopPoint/Search/{name}?modes=tube
+// ---------------------------------------------------------------------
+const LINE       = "piccadilly";
+const STATION_ID = "940GZZLUASL";   // Arsenal
+const STATION    = "Arsenal";
+const APP_KEY    = "";              // optional; free key raises the rate limit
+
+// Which way round the two columns read. "inbound" on the Piccadilly runs
+// towards Heathrow, "outbound" towards Cockfosters.
+const COLUMNS = [
+  { id: "A", api: "inbound",  name: "SOUTHBOUND", towards: "Heathrow" },
+  { id: "B", api: "outbound", name: "NORTHBOUND", towards: "Cockfosters" }
+];
+
+const ROWS = 5;
+const REFRESH_MS = 30000;
+
+// Shown until live data arrives, and kept if the network is unavailable.
+const SAMPLE = {
+  inbound: [
+    ["Heathrow Terminal 5", 2], ["Heathrow Terminal 4", 6], ["Heathrow Terminal 5", 11],
+    ["Heathrow Terminal 4", 15], ["Heathrow Terminal 5", 20]
+  ],
+  outbound: [
+    ["Cockfosters", 1], ["Arnos Grove", 4], ["Oakwood", 7],
+    ["Southgate", 10], ["Bounds Green", 14]
+  ]
+};
+
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, "0");
+const hhmm = (d) => pad(d.getHours()) + ":" + pad(d.getMinutes());
+
+function tidy(name) {
+  return String(name || "")
+    .replace(/\s+Underground Station$/i, "")
+    .replace(/\s+Rail Station$/i, "")
+    .replace(/\s+Station$/i, "")
+    .trim();
+}
+
+function label(mins) {
+  if (mins <= 0) return "due";
+  return mins + " min";
+}
+
+function paint(colId, entries) {
+  const box = $(colId);
+  box.textContent = "";
+  if (!entries.length) {
+    const p = document.createElement("div");
+    p.className = "empty";
+    p.textContent = "No trains reported";
+    box.appendChild(p);
+    return;
+  }
+  for (const [dest, mins] of entries.slice(0, ROWS)) {
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const dot = document.createElement("span");
+    dot.className = "dot";
+
+    const d = document.createElement("span");
+    d.className = "dest";
+    d.textContent = dest;
+
+    const m = document.createElement("span");
+    m.className = "mins";
+    m.textContent = label(mins);
+
+    row.append(dot, d, m);
+    box.appendChild(row);
+  }
+}
+
+function showSample() {
+  for (const c of COLUMNS) paint("col" + c.id, SAMPLE[c.api] || []);
+}
+
+function tickClock() {
+  $("clock").textContent = hhmm(new Date());
+}
+
+async function load() {
+  const q = APP_KEY ? "?app_key=" + encodeURIComponent(APP_KEY) : "";
+  const base = "https://api.tfl.gov.uk/Line/" + LINE;
+
+  const [arrivals, status] = await Promise.all([
+    fetch(base + "/Arrivals/" + STATION_ID + q).then((r) => r.json()),
+    fetch(base + "/Status" + q).then((r) => r.json())
+  ]);
+
+  if (!Array.isArray(arrivals)) throw new Error("unexpected arrivals response");
+
+  arrivals.sort((a, b) => a.timeToStation - b.timeToStation);
+  for (const c of COLUMNS) {
+    const rows = arrivals
+      .filter((a) => a.direction === c.api)
+      .map((a) => [tidy(a.destinationName), Math.round(a.timeToStation / 60)]);
+    paint("col" + c.id, rows);
+  }
+
+  const s = status && status[0] && status[0].lineStatuses && status[0].lineStatuses[0];
+  const text = (s && s.statusSeverityDescription) || "Good Service";
+  const el = $("status");
+  el.textContent = text;
+  el.classList.toggle("bad", text.toLowerCase() !== "good service");
+  $("tick").style.color = text.toLowerCase() === "good service" ? "" : "var(--time)";
+
+  $("updated").textContent = hhmm(new Date());
+  const mode = $("mode");
+  mode.textContent = "live";
+  mode.classList.add("live");
+}
+
+async function refresh() {
+  try {
+    await load();
+  } catch (e) {
+    // Offline, rate limited, or running somewhere that blocks the request:
+    // keep the sample board on screen and say plainly that it is a sample.
+    const mode = $("mode");
+    mode.textContent = "sample data";
+    mode.classList.remove("live");
+  }
+}
+
+$("stationName").textContent = STATION;
+$("dirAName").textContent = COLUMNS[0].name;
+$("dirATowards").textContent = COLUMNS[0].towards;
+$("dirBName").textContent = COLUMNS[1].name;
+$("dirBTowards").textContent = COLUMNS[1].towards;
+
+showSample();
+tickClock();
+$("updated").textContent = hhmm(new Date());
+setInterval(tickClock, 1000);
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
