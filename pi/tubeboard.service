@@ -1,0 +1,14 @@
+[Unit]
+Description=Tube departure board (draws to the framebuffer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/tubeboard/board.py
+WorkingDirectory=/opt/tubeboard
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
