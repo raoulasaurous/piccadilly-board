@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Settings page for the tube board. Runs on the Pi, on the home network.
 
-Open http://tubeboard.local (or the Pi's IP) on a phone. Search for a station,
+Open http://tubeboard.local:8080 (or the Pi's IP) on a phone. Search for a station,
 pick it, pick the line, save. The board redraws with the new station within
 one refresh. Nothing here talks to the outside world except TfL's search.
 
-    python3 portal.py            # port 80 (needs root)
-    python3 portal.py --port 8080
+    python3 portal.py --port 8080   # what the service runs; port 80 belongs to
+                                    # comitup's WiFi setup page
+    python3 portal.py               # port 80 (needs root)
 """
 import argparse
+import datetime as dt
 import html
 import json
 import os
+import re
 import sys
 import urllib.parse as up
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,8 +29,12 @@ TUBE_LINES = {
     "hammersmith-city": "Hammersmith & City", "jubilee": "Jubilee", "metropolitan": "Metropolitan",
     "northern": "Northern", "piccadilly": "Piccadilly", "victoria": "Victoria",
     "waterloo-city": "Waterloo & City", "elizabeth": "Elizabeth line", "dlr": "DLR",
-    "london-overground": "Overground",
+    # TfL split the Overground into six named lines in November 2024; the old
+    # "london-overground" id is not recognised any more, so it must not be offered
+    "liberty": "Liberty", "lioness": "Lioness", "mildmay": "Mildmay",
+    "suffragette": "Suffragette", "weaver": "Weaver", "windrush": "Windrush",
 }
+LIMIT = 25  # search results shown; the loop and the "showing the first N" notice share it
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Tube Board settings</title>
@@ -60,9 +67,20 @@ def load():
 
 def save(d):
     tmp = SETTINGS_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(d, f, indent=2)
-    os.replace(tmp, SETTINGS_PATH)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(d, f, indent=2)
+            # the Pi loses power without warning, so put the bytes on the card
+            # before the rename makes them the live settings
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_PATH)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def esc(s):
@@ -87,6 +105,9 @@ def home(msg=""):
 
 def search(q):
     body = f'<h2>Results for "{esc(q)}"</h2>'
+    if not q:
+        # an empty term makes TfL answer 404, which reads as a broken board
+        return '<div class="err">Type a station name first.</div><a class="btn alt" href="/">Back</a>'
     try:
         r = requests.get(f"{TFL}/StopPoint/Search/{up.quote(q)}", params={"modes": "tube,dlr,elizabeth-line,overground"}, timeout=10)
         r.raise_for_status()
@@ -96,10 +117,16 @@ def search(q):
     if not matches:
         return body + '<p>Nothing found. Try a shorter name.</p><a class="btn alt" href="/">Back</a>'
     body += "<ul>"
-    for m in matches[:12]:
+    for m in matches[:LIMIT]:
+        if not m.get("id"):
+            continue
         name = m.get("name", "").replace(" Underground Station", "")
         body += f'<li><a class="btn" href="/pick?id={esc(m["id"])}&name={up.quote(name)}">{esc(name)}</a></li>'
-    body += '</ul><a class="btn alt" href="/">Back</a>'
+    body += "</ul>"
+    if len(matches) > LIMIT:
+        # a cut list that looks complete makes the user retype the same search
+        body += f'<p><small>Showing the first {LIMIT} of {len(matches)}. Type more of the name.</small></p>'
+    body += '<a class="btn alt" href="/">Back</a>'
     return body
 
 
@@ -121,8 +148,54 @@ def pick(stop_id, name):
     return body
 
 
+def resolve_hub(stop_id, line, name):
+    """Search gives a hub id (HUBKGX) for every big interchange, and
+    /Line/<line>/Arrivals/HUBKGX answers 200 with an empty list for ever. Swap it for
+    the child stop that carries the chosen line. Returns (id, name), or (None, None)."""
+    r = requests.get(f"{TFL}/StopPoint/{up.quote(stop_id, safe='')}", timeout=10)
+    r.raise_for_status()
+    kids = [c for c in r.json().get("children", [])
+            if any(l.get("id") == line for l in c.get("lines", []))]
+    if not kids:
+        return None, None
+    def key(c):
+        cid = str(c.get("naptanId") or c.get("id") or "")
+        # a hub can hold two stops with the same line: the tube platforms first,
+        # then the DLR platforms, then the National Rail ones
+        for i, pref in enumerate(("940GZZLU", "940GZZDL", "910G")):
+            if cid.startswith(pref):
+                return i
+        return 9
+    c = min(kids, key=key)
+    kid_name = c.get("commonName") or name
+    for tail in (" Underground Station", " Rail Station", " DLR Station"):
+        kid_name = kid_name.replace(tail, "")
+    return str(c.get("naptanId") or c.get("id") or ""), kid_name[:64]
+
+
+def has_arrivals(stop_id, line):
+    """Last gate before saving: a stop the line does not serve answers with an empty
+    list, not an error. An empty list at 03:00 is honest, so only ask in the daytime."""
+    if not 6 <= dt.datetime.now().hour < 23:
+        return True
+    try:
+        r = requests.get(f"{TFL}/Line/{up.quote(line, safe='')}/Arrivals/{up.quote(stop_id, safe='')}",
+                         timeout=10)
+        r.raise_for_status()
+        return bool(r.json())
+    except Exception:
+        return True  # a wobble at TfL must not stop the user changing station
+
+
 class H(BaseHTTPRequestHandler):
+    timeout = 30  # a phone that opens a socket and says nothing must not park a thread
+
+    def __init__(self, *a, **kw):
+        self._sent = False
+        super().__init__(*a, **kw)
+
     def _send(self, body, code=200, location=None):
+        self._sent = True
         self.send_response(code)
         if location:
             self.send_header("Location", location)
@@ -133,27 +206,64 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _fail(self, e):
+        """An unhandled exception kills the thread and the phone sees only "cannot open
+        the page". Say what happened instead - but never answer twice, and never
+        answer a socket the phone has already dropped."""
+        if self._sent or isinstance(e, (BrokenPipeError, ConnectionResetError)):
+            return
+        try:
+            self._send('<div class="err">' + esc(e) + '</div><a class="btn alt" href="/">Back</a>', 500)
+        except Exception:
+            pass
+
     def do_GET(self):
-        u = up.urlsplit(self.path)
-        qs = up.parse_qs(u.query)
-        if u.path == "/":
-            self._send(home('<div class="ok">Saved. The board updates within a minute.</div>' if "saved" in qs else ""))
-        elif u.path == "/search":
-            self._send(search(qs.get("q", [""])[0].strip()))
-        elif u.path == "/pick":
-            self._send(pick(qs.get("id", [""])[0], qs.get("name", [""])[0]))
-        else:
-            self._send("<p>Not found.</p>", 404)
+        try:
+            u = up.urlsplit(self.path)
+            qs = up.parse_qs(u.query)
+            if u.path == "/":
+                self._send(home('<div class="ok">Saved. The board updates within a minute.</div>' if "saved" in qs else ""))
+            elif u.path == "/search":
+                self._send(search(qs.get("q", [""])[0].strip()))
+            elif u.path == "/pick":
+                self._send(pick(qs.get("id", [""])[0], qs.get("name", [""])[0]))
+            else:
+                self._send("<p>Not found.</p>", 404)
+        except Exception as e:
+            self._fail(e)
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length", 0))
+        try:
+            self._post()
+        except Exception as e:
+            self._fail(e)
+
+    def _post(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            n = 0
         form = up.parse_qs(self.rfile.read(n).decode())
         g = lambda k, d="": form.get(k, [d])[0].strip()
         s = load()
         if self.path == "/save":
-            if not (g("station_id") and g("line")):
-                return self._send('<div class="err">Missing station or line.</div>' + home())
-            s.update({"station_id": g("station_id"), "station_name": g("station_name"), "line": g("line"),
+            line, stop_id, name = g("line"), g("station_id"), g("station_name")[:64]
+            # anything on the home network can post here, and the board puts both
+            # values straight in a URL, so check them the same way the page does
+            if line not in TUBE_LINES or not re.fullmatch(r"[A-Za-z0-9]{1,32}", stop_id):
+                return self._send('<div class="err">Bad station or line.</div>' + home())
+            if stop_id.startswith("HUB"):
+                try:
+                    stop_id, name = resolve_hub(stop_id, line, name)
+                except Exception as e:
+                    return self._send(f'<div class="err">TfL lookup failed: {esc(e)}</div>' + home())
+                if not stop_id:
+                    return self._send('<div class="err">That line does not stop here. Pick another line.'
+                                      '</div>' + home())
+            if not has_arrivals(stop_id, line):
+                return self._send('<div class="err">TfL reports no trains at all for that station on that '
+                                  'line, so the board would stay empty. Nothing saved.</div>' + home())
+            s.update({"station_id": stop_id, "station_name": name, "line": line,
                       # labels come from TfL again for the new station
                       "columns": [{"direction": "inbound", "label": "", "towards": ""},
                                   {"direction": "outbound", "label": "", "towards": ""}]})
@@ -165,7 +275,11 @@ class H(BaseHTTPRequestHandler):
                 return self._send('<div class="err">Numbers only.</div>' + home())
         else:
             return self._send("<p>Not found.</p>", 404)
-        save(s)
+        try:
+            save(s)
+        except OSError as e:
+            return self._send('<div class="err">Could not write the settings file (' + esc(e) +
+                              '). The SD card may be read-only.</div>' + home())
         self._send("", 303, "/?saved=1")
 
     def log_message(self, fmt, *args):

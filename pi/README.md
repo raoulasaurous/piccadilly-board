@@ -33,11 +33,11 @@ sudo reboot
 ```
 
 The board comes up on the screen about 30 s after power. The settings page is
-at **http://tubeboard.local** on any phone on the same WiFi.
+at **http://tubeboard.local:8080** on any phone on the same WiFi.
 
 ## Change station
 
-Open http://tubeboard.local, type a station name, tap it, tap the line. Done.
+Open http://tubeboard.local:8080, type a station name, tap it, tap the line. Done.
 The board redraws within a minute.
 
 ## If the WiFi changes

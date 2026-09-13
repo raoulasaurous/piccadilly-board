@@ -1,9 +1,12 @@
 [Unit]
 Description=Tube departure board (draws to the framebuffer)
-After=network-online.target
-Wants=network-online.target
+# not network-online.target: with no WiFi NetworkManager-wait-online blocks the
+# boot for up to a minute, and neither program needs the network to start
+After=network.target
 
 [Service]
+# so every print lands in the journal, not in a buffer nobody reads
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/tubeboard/board.py
 WorkingDirectory=/opt/tubeboard
 Restart=always
