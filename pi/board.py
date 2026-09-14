@@ -354,6 +354,19 @@ def label_mins(secs):
     return "due" if m <= 0 else f"{m} min"
 
 
+def clip(d, text, fnt, room):
+    """Trim `text` with an ellipsis until it fits in `room` pixels. TfL's reasons
+    are free text with no length limit - today's longest raw reason is 204
+    characters - so nothing on this line may assume it fits."""
+    if room <= 0:
+        return ""
+    if d.textlength(text, font=fnt) <= room:
+        return text
+    while text and d.textlength(text + "...", font=fnt) > room:
+        text = text[:-1].rstrip() if " " not in text else text.rsplit(" ", 1)[0]
+    return (text + "...") if text else ""
+
+
 def paste_roundel(img, cx, cy, r, bar_colour, scale=3):
     """The Underground roundel: a red ring with a coloured bar across it.
     Against the ring's outer diameter D: bar width 1.05 D, bar height 0.22 D,
@@ -427,7 +440,10 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
     upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
-    d.text((W - pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="rm")
+    fupd = font("regular", 1.35 * u)
+    d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
+    # Everything on the left of this line has to stop before the timestamp.
+    right_edge = W - pad - text_w(d, upd, fupd) - 2.0 * u
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
@@ -435,12 +451,12 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         # Cold boot: the Pi is up before the network is, so the first fetch always
         # fails. There is no last update to show, and saying there is reads as a
         # fault to anyone walking past. Say what is actually happening instead.
-        d.text((x, fy), "Starting up, waiting for Transport for London", font=fs, fill=DIM, anchor="lm")
+        d.text((x, fy), clip(d, "Starting up, waiting for Transport for London", fs, right_edge - x), font=fs, fill=DIM, anchor="lm")
     elif not live:
-        d.text((x, fy), "No live data, showing the last update", font=fs, fill=ORANGE, anchor="lm")
+        d.text((x, fy), clip(d, "No live data, showing the last update", fs, right_edge - x), font=fs, fill=ORANGE, anchor="lm")
     elif not status_ok:
         # a green tick we never checked is worse than saying we do not know
-        d.text((x, fy), "Service status unknown", font=font("bold", 1.9 * u), fill=ORANGE, anchor="lm")
+        d.text((x, fy), clip(d, "Service status unknown", font("bold", 1.9 * u), right_edge - x), font=font("bold", 1.9 * u), fill=ORANGE, anchor="lm")
     else:
         good = status_text.lower() in ("good service", "no issues")
         col = GREEN if good else ORANGE
@@ -461,13 +477,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         # why, in the reader's own words, trimmed to what fits on the line
         if status_why:
             x2 += text_w(d, status_text, font("bold", 1.9 * u)) + 0.7 * u
-            why = "- " + status_why
-            room = (W - pad) - x2
-            while why and len(why) > 2 and text_w(d, why + "...", fs) > room:
-                why = why.rsplit(" ", 1)[0]
-            if why:
-                d.text((x2, fy), why + ("..." if why != "- " + status_why else ""),
-                       font=fs, fill=DIM, anchor="lm")
+            why = clip(d, "- " + status_why, fs, right_edge - x2)
+            if why and why != "-...":
+                d.text((x2, fy), why, font=fs, fill=DIM, anchor="lm")
 
     # --- two columns
     top = rule_y + 1.8 * u
