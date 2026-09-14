@@ -450,7 +450,10 @@ class Framebuffer:
     def _pack(self, img):
         if self.bpp == 32:
             return img.convert("RGBA").tobytes("raw", "BGRA")
-        # 16bpp: RGB565, little endian, the usual Linux framebuffer layout
+        # 16bpp: RGB565, little endian. This is not a rare fallback - the vc4
+        # driver's framebuffer emulation picks 16-bit on a Pi 3, and neither
+        # config.txt nor a -32 on the video= line overrides it. Verified on the
+        # real board 2026-09-14: 1920x1080 at 16bpp. So this is THE path here.
         import numpy as np
         a = np.asarray(img.convert("RGB"), dtype=np.uint16)
         v = ((a[:, :, 0] >> 3) << 11) | ((a[:, :, 1] >> 2) << 5) | (a[:, :, 2] >> 3)

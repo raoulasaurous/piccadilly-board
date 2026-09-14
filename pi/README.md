@@ -46,6 +46,16 @@ With no known WiFi the Pi starts its own hotspot, **TubeBoard-setup**. Join it
 from a phone and a page appears to enter the new WiFi name and password. The
 Pi then reboots on to the new network.
 
+## The screen's identity is pinned
+
+`install.sh` saves a copy of the screen's EDID to `/lib/firmware/edid/tubeboard.bin`
+and tells the kernel to use that instead of asking the screen. Without it, cutting
+power to the monitor leaves the board drawn at 1920x1080 but displayed at 1024x768,
+zoomed into its own top-left corner, until someone reboots the Pi.
+
+**So install with the screen plugged in and switched on.** If you swap the monitor
+for a different one, delete that file and run the installer again.
+
 ## Bench tests before framing
 
 ```bash

@@ -32,6 +32,8 @@ CMD_WAS=$(cat "$CMD")
 # monitor that was asleep at boot gives a stretched 1024x768 board.
 # Strip any old value for each key first: grep can only add an option, never correct
 # one, so a re-run would leave two video= tokens on the line.
+# No bpp suffix on the video= line: a Pi 3 gives 16-bit whatever you ask for
+# (the vc4 fbdev emulation decides), so -32 would only look like it did something.
 for opt in "video=HDMI-A-1:1920x1080MR@60D" "consoleblank=0" "vt.global_cursor_default=0" \
            "logo.nologo" "loglevel=3" "quiet"; do
   key=${opt%%=*}
@@ -52,6 +54,29 @@ elif ! head -n 1 "$CMD" | grep -q -- 'console=tty[0-9]'; then
   sed -i "1s/\$/ console=tty3/" "$CMD"
 fi
 [ "$(cat "$CMD")" = "$CMD_WAS" ] || NEED_REBOOT=yes
+
+# Pin the screen's own EDID. Without this, cutting power to the MONITOR (a
+# blip, or someone switching the wall socket) makes the Pi re-ask the screen who
+# it is, get no answer in time, and fall back to a generic list that stops at
+# 1024x768 - while the framebuffer stays 1920x1080. The result is the board
+# drawn at full size and displayed zoomed into its top-left corner, and it stays
+# that way until a reboot. Verified on the bench 2026-09-14, both ways round.
+# Capture happens on the first install, while the screen is awake and talking.
+EDID=/lib/firmware/edid/tubeboard.bin
+SRC=/sys/class/drm/card0-HDMI-A-1/edid
+if [ ! -s "$EDID" ] && [ -s "$SRC" ]; then
+  mkdir -p /lib/firmware/edid
+  cp "$SRC" "$EDID"
+  echo "saved this screen's EDID ($(wc -c < "$EDID") bytes)"
+fi
+if [ -s "$EDID" ]; then
+  sed -i "1s| drm.edid_firmware=[^ ]*||g" "$CMD"
+  sed -i "1s|\$| drm.edid_firmware=HDMI-A-1:edid/tubeboard.bin|" "$CMD"
+else
+  echo "WARNING: could not read the screen's EDID - is it plugged in and awake?"
+  echo "         run this installer again with the screen on, or a monitor"
+  echo "         power cut will leave the board zoomed in."
+fi
 
 CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
 grep -q '^hdmi_force_hotplug' "$CFG" || {
