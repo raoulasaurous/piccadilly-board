@@ -5,7 +5,12 @@ set -e
 cd "$(dirname "$0")"
 
 apt-get update
-apt-get install -y python3-pil python3-requests python3-numpy fonts-dejavu-core comitup
+# comitup takes over NetworkManager, and on a headless box that can drop the
+# WiFi you are connected over. Install the board first, add the hotspot second,
+# with a screen attached:  SKIP_COMITUP=1 bash install.sh
+PKGS="python3-pil python3-requests python3-numpy fonts-dejavu-core"
+[ -n "$SKIP_COMITUP" ] || PKGS="$PKGS comitup"
+apt-get install -y $PKGS
 
 # A later run only needs a reboot if it changes the boot settings.
 NEED_REBOOT=no
@@ -59,7 +64,7 @@ systemctl disable --now getty@tty1.service || true
 
 # Hotspot fallback: if the Pi cannot find a known WiFi it starts "TubeBoard-setup",
 # and a phone that joins gets a page to enter the new WiFi name and password.
-if [ -f /etc/comitup.conf ]; then
+if [ -z "$SKIP_COMITUP" ] && [ -f /etc/comitup.conf ]; then
   sed -i 's/^#\? *ap_name:.*/ap_name: TubeBoard-setup/' /etc/comitup.conf
   grep -q '^ap_name:' /etc/comitup.conf || echo 'ap_name: TubeBoard-setup' >> /etc/comitup.conf
 fi
