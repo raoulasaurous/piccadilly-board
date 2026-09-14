@@ -353,6 +353,29 @@ def label_mins(secs):
     return "due" if m <= 0 else f"{m} min"
 
 
+def paste_roundel(img, cx, cy, r, bar_colour, scale=4):
+    """The Underground roundel: a red ring with a coloured bar across it.
+    TfL's proportions, against the ring's outer diameter D: bar width 1.25 D,
+    bar height 0.275 D, ring thickness 0.15 D. Drawn big and shrunk, because
+    PIL draws hard-edged circles."""
+    D = 2 * r
+    half_w, half_h = 1.25 * D / 2, 0.275 * D / 2
+    ring = max(1, round(0.15 * D * scale))
+    pad_px = 4
+    w = round((2 * half_w) * scale) + pad_px * 2
+    h = round(D * scale) + pad_px * 2
+    big = Image.new("RGB", (w, h), BG)
+    bd = ImageDraw.Draw(big)
+    ox, oy = w / 2, h / 2
+    rs = r * scale
+    bd.ellipse([ox - rs + ring / 2, oy - rs + ring / 2, ox + rs - ring / 2, oy + rs - ring / 2],
+               outline=RED, width=ring)
+    bd.rectangle([ox - half_w * scale, oy - half_h * scale,
+                  ox + half_w * scale, oy + half_h * scale], fill=bar_colour)
+    small = big.resize((round(w / scale), round(h / scale)), Image.LANCZOS)
+    img.paste(small, (round(cx - small.width / 2), round(cy - small.height / 2)))
+
+
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live):
     """Same proportions as the web page: everything is a fraction of the width."""
     u = W / 100.0
@@ -365,12 +388,13 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     pad = 2.5 * u
     # --- header: roundel, line name, station; clock on the right
     # The roundel stands the full height of the line name plus the station line,
-    # so it reads as the mark it is rather than a bullet point.
+    # so it reads as the mark it is rather than a bullet point. Drawn to TfL's
+    # published proportions and supersampled: PIL's circles are jagged at this
+    # size, and a ragged roundel is the first thing a Londoner would notice.
     r = 3.0 * u
-    cx, cy = pad + r, pad + 2.8 * u
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=RED, width=int(0.62 * u))
-    d.rectangle([cx - r * 1.2, cy - 0.66 * u, cx + r * 1.2, cy + 0.66 * u], fill=line_colour)
-    tx = cx + r * 1.2 + 1.4 * u
+    cx, cy = pad + r * 1.25, pad + 2.8 * u
+    paste_roundel(img, cx, cy, r, line_colour)
+    tx = cx + r * 1.25 + 1.4 * u
     d.text((tx, pad - 0.2 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
     d.text((tx, pad + 3.1 * u), f"From {settings['station_name']}", font=font("light", 2.2 * u), fill=DIM)
     clock = now.strftime("%H:%M")
@@ -388,8 +412,11 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     fs = font("regular", 1.9 * u)
     # Two lines in the footer strip now: the status, and under it when we last
     # heard from TfL. Split the strip between them.
-    fy = foot_rule + 1.5 * u
-    uy = foot_rule + 3.3 * u
+    # Centred between the rule and the bottom of the glass, not the text margin:
+    # from a sofa the eye measures to the edge of the screen.
+    mid = (foot_rule + H) / 2
+    fy = mid - 0.82 * u
+    uy = mid + 1.09 * u
     upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
     d.text((pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="lm")
     x = pad
@@ -447,11 +474,11 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         if i:
             xd = x0 - gap / 2
             d.rectangle([xd, top, xd + 1, foot_rule - 1.5 * u], fill=RULE)
-        fh = font("bold", 1.7 * u)
+        fh = font("bold", 2.6 * u)
         d.text((x0, top), c["label"], font=fh, fill=WHITE)
         if c["towards"]:
             d.text((x0 + text_w(d, c["label"], fh) + 1.0 * u, top + 0.35 * u),
-                   f"towards {c['towards']}", font=font("light", 1.3 * u), fill=DIM)
+                   f"towards {c['towards']}", font=font("light", 1.7 * u), fill=DIM)
         rows = c["rows"]
         if not rows:
             msg = "No trains reported" if updated else ""
