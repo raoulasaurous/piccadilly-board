@@ -252,13 +252,14 @@ def tidy_reason(reason, line):
         if len(". ".join(keep)) > 110:
             break
     out = ". ".join(keep).rstrip(" .")
-    # the severity word is already on the line in colour; do not say it twice
-    for lead in ("Severe delays due to ", "Minor delays due to ", "Delays due to ",
-                 "Part suspended due to ", "Suspended due to ", "Part closure due to "):
+    # The severity is already on the line in colour, so drop that word - but keep
+    # the "due to", which is what makes the line read as a sentence after the dash.
+    for lead in ("Severe delays ", "Minor delays ", "Delays ", "Part suspended ",
+                 "Suspended ", "Part closure ", "Part closed ", "Reduced service "):
         if out.lower().startswith(lead.lower()):
             out = out[len(lead):]
             break
-    return out[:1].upper() + out[1:] if out else ""
+    return out
 
 
 def fetch(settings):
@@ -355,12 +356,12 @@ def label_mins(secs):
 
 def paste_roundel(img, cx, cy, r, bar_colour, scale=4):
     """The Underground roundel: a red ring with a coloured bar across it.
-    TfL's proportions, against the ring's outer diameter D: bar width 1.25 D,
-    bar height 0.275 D, ring thickness 0.15 D. Drawn big and shrunk, because
-    PIL draws hard-edged circles."""
+    Against the ring's outer diameter D: bar width 1.05 D, bar height 0.22 D,
+    ring thickness 0.17 D. Drawn big and shrunk, because PIL draws hard-edged
+    circles. This is a drawing to those ratios, not TfL's own artwork file."""
     D = 2 * r
-    half_w, half_h = 1.25 * D / 2, 0.275 * D / 2
-    ring = max(1, round(0.15 * D * scale))
+    half_w, half_h = 1.05 * D / 2, 0.22 * D / 2
+    ring = max(1, round(0.17 * D * scale))
     pad_px = 4
     w = round((2 * half_w) * scale) + pad_px * 2
     h = round(D * scale) + pad_px * 2
@@ -392,9 +393,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # published proportions and supersampled: PIL's circles are jagged at this
     # size, and a ragged roundel is the first thing a Londoner would notice.
     r = 3.0 * u
-    cx, cy = pad + r * 1.25, pad + 2.8 * u
+    cx, cy = pad + r * 1.05, pad + 2.8 * u
     paste_roundel(img, cx, cy, r, line_colour)
-    tx = cx + r * 1.25 + 1.4 * u
+    tx = cx + r * 1.05 + 1.4 * u
     d.text((tx, pad - 0.2 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
     d.text((tx, pad + 3.1 * u), f"From {settings['station_name']}", font=font("light", 2.2 * u), fill=DIM)
     clock = now.strftime("%H:%M")
@@ -418,7 +419,7 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     fy = mid - 0.82 * u
     uy = mid + 1.09 * u
     upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
-    d.text((pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="lm")
+    d.text((W - pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="rm")
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
@@ -450,13 +451,13 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         d.text((x2, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
         # why, in the reader's own words, trimmed to what fits on the line
         if status_why:
-            x2 += text_w(d, status_text, font("bold", 1.9 * u)) + 1.0 * u
-            why = status_why
+            x2 += text_w(d, status_text, font("bold", 1.9 * u)) + 0.7 * u
+            why = "- " + status_why
             room = (W - pad) - x2
-            while why and text_w(d, why + "...", fs) > room:
+            while why and len(why) > 2 and text_w(d, why + "...", fs) > room:
                 why = why.rsplit(" ", 1)[0]
             if why:
-                d.text((x2, fy), why + ("..." if why != status_why else ""),
+                d.text((x2, fy), why + ("..." if why != "- " + status_why else ""),
                        font=fs, fill=DIM, anchor="lm")
 
     # --- two columns
