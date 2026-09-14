@@ -64,10 +64,16 @@ fi
 # Capture happens on the first install, while the screen is awake and talking.
 EDID=/lib/firmware/edid/tubeboard.bin
 SRC=/sys/class/drm/card0-HDMI-A-1/edid
-if [ ! -s "$EDID" ] && [ -s "$SRC" ]; then
+# NB: sysfs reports this file as zero bytes even when it has content, so
+# [ -s "$SRC" ] is always false here. Copy it, then check what we actually got.
+if [ ! -s "$EDID" ] && [ -r "$SRC" ]; then
   mkdir -p /lib/firmware/edid
-  cp "$SRC" "$EDID"
-  echo "saved this screen's EDID ($(wc -c < "$EDID") bytes)"
+  cp "$SRC" "$EDID" 2>/dev/null || true
+  if [ -s "$EDID" ]; then
+    echo "saved this screen's EDID ($(wc -c < "$EDID") bytes)"
+  else
+    rm -f "$EDID"
+  fi
 fi
 if [ -s "$EDID" ]; then
   sed -i "1s| drm.edid_firmware=[^ ]*||g" "$CMD"
