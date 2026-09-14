@@ -34,7 +34,7 @@ DEFAULTS = {
         {"direction": "inbound", "label": "", "towards": ""},
         {"direction": "outbound", "label": "", "towards": ""},
     ],
-    "rows": 5,
+    "rows": 4,
     "refresh_seconds": 30,
     "app_key": "",
 }
@@ -314,12 +314,20 @@ def fetch(settings):
 # ---------------------------------------------------------------- drawing
 
 _font_cache = {}
+# Hammersmith One is the closest freely-licensed face to TfL's Johnston, which is
+# proprietary and not ours to ship. It comes in ONE weight, so the board separates
+# things by size and colour rather than by weight - which is what the real signs
+# do anyway. DejaVu stays as the fallback if the file is missing.
+_HERE_FONT = os.path.join(HERE, "HammersmithOne.ttf")
 FONT_CANDIDATES = {
-    "regular": ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "regular": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                 "/System/Library/Fonts/HelveticaNeue.ttc"],
-    "bold": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "bold": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
              ("/System/Library/Fonts/HelveticaNeue.ttc", 1)],
-    "light": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf",
+    "light": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
               ("/System/Library/Fonts/HelveticaNeue.ttc", 7)],
 }
@@ -367,7 +375,7 @@ def clip(d, text, fnt, room):
     return (text + "...") if text else ""
 
 
-def paste_roundel(img, cx, cy, r, bar_colour, scale=3):
+def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
     """The Underground roundel: a red ring with a coloured bar across it.
     Against the ring's outer diameter D: bar width 1.05 D, bar height 0.22 D,
     ring thickness 0.17 D. Drawn big and shrunk, because PIL draws hard-edged
@@ -386,6 +394,13 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3):
                outline=RED, width=ring)
     bd.rectangle([ox - half_w * scale, oy - half_h * scale,
                   ox + half_w * scale, oy + half_h * scale], fill=bar_colour)
+    if label:
+        size = max(6, int(half_h * 2 * scale * 0.78))
+        f = font("regular", size)
+        while bd.textlength(label, font=f) > (half_w * 2 * scale) * 0.86 and size > 6:
+            size -= 2
+            f = font("regular", size)
+        bd.text((ox, oy), label, font=f, fill=WHITE, anchor="mm")
     small = big.resize((round(w / scale), round(h / scale)), Image.LANCZOS)
     img.paste(small, (round(cx - small.width / 2), round(cy - small.height / 2)))
 
@@ -414,16 +429,17 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # so it reads as the mark it is rather than a bullet point. Drawn to TfL's
     # published proportions and supersampled: PIL's circles are jagged at this
     # size, and a ragged roundel is the first thing a Londoner would notice.
-    r = 3.0 * u
-    cx, cy = pad + r * 1.05, pad + 2.8 * u
-    paste_roundel(img, cx, cy, r, line_colour)
+    r = 3.6 * u
+    cx, cy = pad + r * 1.05, pad + 3.1 * u
+    paste_roundel(img, cx, cy, r, line_colour,
+                  label=settings["station_name"].upper())
     tx = cx + r * 1.05 + 1.4 * u
-    d.text((tx, pad - 0.2 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
-    d.text((tx, pad + 3.1 * u), f"From {settings['station_name']}", font=font("light", 2.2 * u), fill=DIM)
+    d.text((tx, pad + 0.4 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
+    d.text((tx, pad + 3.9 * u), f"From {settings['station_name']}", font=font("light", 2.0 * u), fill=DIM)
     clock = now.strftime("%H:%M")
     fc = font("light", 5.4 * u)
     d.text((W - pad, cy), clock, font=fc, fill=WHITE, anchor="rm")
-    rule_y = pad + 6.6 * u
+    rule_y = pad + 7.3 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
     # --- footer
@@ -508,16 +524,16 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
                 d.text((x0, rows_top + 0.5 * u), msg, font=font("light", 1.8 * u), fill=DIM)
             continue
         dot_x = x0 + 0.5 * u
-        fd, fm = font("regular", 2.0 * u), font("regular", 2.0 * u)
+        fd, fm = font("regular", 2.7 * u), font("regular", 2.7 * u)
         for j, (dest, secs) in enumerate(rows):
             yc = rows_top + step * j + step / 2
             if j < len(rows) - 1:
                 d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=(0, 40, 140))
-            rr = 0.45 * u
+            rr = 0.62 * u
             d.ellipse([dot_x - rr, yc - rr, dot_x + rr, yc + rr], fill=line_colour if line != "northern" else WHITE)
-            d.text((dot_x + 1.6 * u, yc - 1.15 * u), dest, font=fd, fill=WHITE)
+            d.text((dot_x + 1.9 * u, yc), dest, font=fd, fill=WHITE, anchor="lm")
             m = label_mins(secs)
-            d.text((x0 + col_w - text_w(d, m, fm), yc - 1.15 * u), m, font=fm, fill=ORANGE)
+            d.text((x0 + col_w, yc), m, font=fm, fill=ORANGE, anchor="rm")
     return img
 
 

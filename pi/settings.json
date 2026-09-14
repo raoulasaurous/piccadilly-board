@@ -3,10 +3,18 @@
   "station_id": "940GZZLUASL",
   "station_name": "Arsenal",
   "columns": [
-    {"direction": "inbound", "label": "", "towards": ""},
-    {"direction": "outbound", "label": "", "towards": ""}
+    {
+      "direction": "inbound",
+      "label": "",
+      "towards": ""
+    },
+    {
+      "direction": "outbound",
+      "label": "",
+      "towards": ""
+    }
   ],
-  "rows": 5,
+  "rows": 4,
   "refresh_seconds": 30,
   "app_key": ""
 }
