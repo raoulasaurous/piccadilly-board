@@ -34,7 +34,7 @@ DEFAULTS = {
         {"direction": "inbound", "label": "", "towards": ""},
         {"direction": "outbound", "label": "", "towards": ""},
     ],
-    "rows": 4,
+    "rows": 5,
     "refresh_seconds": 30,
     "app_key": "",
 }
