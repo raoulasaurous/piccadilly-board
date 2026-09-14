@@ -50,7 +50,9 @@ ul{{list-style:none;padding:0;margin:0}} li{{margin:8px 0}}
 .ok{{background:#173d2a;color:#9fe0b6;padding:10px 14px;border-radius:8px;margin:12px 0}}
 .err{{background:#4a1c1c;color:#f6b6b6;padding:10px 14px;border-radius:8px;margin:12px 0}}
 label{{display:block;color:#9aa;font-size:14px;margin:12px 0 4px}}
-small{{color:#778}}
+small{{color:#778;display:block;margin-top:10px;line-height:1.45}}
+input[type=range]{{width:100%;margin:2px 0 6px;accent-color:#5a78ff}}
+input[type=checkbox]{{width:18px;height:18px;vertical-align:-3px;margin-right:8px;accent-color:#5a78ff}}
 </style></head><body>
 <h1>Tube Board</h1><small>Settings for the board on the wall</small>
 {body}
@@ -92,10 +94,37 @@ def home(msg=""):
     body = msg
     body += (f'<div class="now"><span>Showing</span><br><b>{esc(s.get("station_name","?"))}</b>'
              f'<br><span>{esc(TUBE_LINES.get(s.get("line",""), s.get("line","?")))} line, '
-             f'{esc(s.get("rows",5))} trains each way, refresh every {esc(s.get("refresh_seconds",30))} s</span></div>')
+             f'{esc(s.get("rows",5))} trains each way, refresh every {esc(s.get("refresh_seconds",30))} s'
+             f'<br>brightness {esc(s.get("brightness",100))}%'
+             + (f', dimming to {esc(s.get("brightness_dim",30))}% at {esc(s.get("dim_from","21:00"))}'
+                if s.get("dim_enabled", True) else ', no dimming')
+             + (f', off {esc(s.get("off_from","00:00"))}-{esc(s.get("off_until","06:00"))}'
+                if s.get("off_overnight") else '')
+             + '</span></div>')
     body += ('<h2>Change station</h2><form method="get" action="/search">'
              '<input type="text" name="q" placeholder="Station name, e.g. Arsenal" autofocus>'
              '<button type="submit">Search</button></form>')
+    on = "checked" if s.get("dim_enabled", True) else ""
+    off = "checked" if s.get("off_overnight", False) else ""
+    body += ('<h2>Brightness</h2><form method="post" action="/save-screen">'
+             f'<label>Daytime brightness: <b id="bv">{esc(s.get("brightness",100))}</b>%</label>'
+             f'<input type="range" name="brightness" min="10" max="100" step="5" '
+             f'value="{esc(s.get("brightness",100))}" oninput="bv.textContent=this.value">'
+             f'<label>Evening brightness: <b id="dv">{esc(s.get("brightness_dim",30))}</b>%</label>'
+             f'<input type="range" name="brightness_dim" min="0" max="100" step="5" '
+             f'value="{esc(s.get("brightness_dim",30))}" oninput="dv.textContent=this.value">'
+             f'<label><input type="checkbox" name="dim_enabled" value="1" {on}> '
+             'Dim in the evening</label>'
+             f'<label>Full brightness from</label><input type="text" name="day_from" value="{esc(s.get("day_from","07:00"))}">'
+             f'<label>Dim from</label><input type="text" name="dim_from" value="{esc(s.get("dim_from","21:00"))}">'
+             f'<label><input type="checkbox" name="off_overnight" value="1" {off}> '
+             'Switch the screen off overnight</label>'
+             f'<label>Off from</label><input type="text" name="off_from" value="{esc(s.get("off_from","00:00"))}">'
+             f'<label>Back on at</label><input type="text" name="off_until" value="{esc(s.get("off_until","06:00"))}">'
+             '<button type="submit">Save</button></form>'
+             '<small>The monitor\'s own buttons are unreachable once it is in the '
+             'frame, so this is how brightness is set. Changes apply within half a minute.</small>')
+
     body += ('<h2>Rows and refresh</h2><form method="post" action="/save-misc">'
              f'<label>Trains per column</label><input type="text" name="rows" value="{esc(s.get("rows",5))}">'
              f'<label>Refresh every (seconds, 20 or more)</label><input type="text" name="refresh_seconds" value="{esc(s.get("refresh_seconds",30))}">'
@@ -267,6 +296,27 @@ class H(BaseHTTPRequestHandler):
                       # labels come from TfL again for the new station
                       "columns": [{"direction": "inbound", "label": "", "towards": ""},
                                   {"direction": "outbound", "label": "", "towards": ""}]})
+        elif self.path == "/save-screen":
+            def hhmm(v, fallback):
+                v = (v or "").strip()
+                try:
+                    h, m = v.split(":")
+                    h, m = int(h), int(m)
+                    if 0 <= h < 24 and 0 <= m < 60:
+                        return f"{h:02d}:{m:02d}"
+                except ValueError:
+                    pass
+                return fallback
+            try:
+                s["brightness"] = max(10, min(100, int(g("brightness", "100"))))
+                s["brightness_dim"] = max(0, min(100, int(g("brightness_dim", "30"))))
+            except ValueError:
+                return self._send('<div class="err">Brightness must be a number.</div>' + home())
+            s["dim_enabled"] = g("dim_enabled") == "1"
+            s["off_overnight"] = g("off_overnight") == "1"
+            for key, default in (("day_from", "07:00"), ("dim_from", "21:00"),
+                                 ("off_from", "00:00"), ("off_until", "06:00")):
+                s[key] = hhmm(g(key), s.get(key, default))
         elif self.path == "/save-misc":
             try:
                 s["rows"] = max(1, min(8, int(g("rows", "5"))))

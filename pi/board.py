@@ -22,6 +22,12 @@ from collections import Counter
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    import screen
+except Exception as e:                          # noqa: BLE001
+    screen = None
+    print("screen control unavailable:", e, file=sys.stderr, flush=True)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
 TFL = "https://api.tfl.gov.uk"
@@ -37,6 +43,16 @@ DEFAULTS = {
     "rows": 5,
     "refresh_seconds": 30,
     "app_key": "",
+    # Screen brightness, driven over the HDMI cable. Once the monitor is in the
+    # frame its own buttons are unreachable, so this is the only way to change it.
+    "brightness": 100,
+    "brightness_dim": 30,
+    "dim_enabled": True,
+    "off_overnight": False,
+    "day_from": "07:00",
+    "dim_from": "21:00",
+    "off_from": "00:00",
+    "off_until": "06:00",
 }
 
 LINE_NAMES = {
@@ -617,6 +633,12 @@ def main():
         return
 
     fb = Framebuffer()
+    if screen:
+        # Talk to the monitor once at startup so a restart re-asserts whatever the
+        # schedule says, even if someone poked the buttons before it was framed.
+        for msg in screen.apply(settings.data, dt.datetime.now(), force=True):
+            print("screen:", msg, flush=True)
+    last_screen = 0.0
     cols, status, status_ok, status_why, updated, live = [], None, False, "", None, False
     # draw once before the first fetch: a blank wall screen reads as a dead unit, and
     # with no WiFi the first request can hold for its full ten seconds
@@ -625,8 +647,14 @@ def main():
     failures = 0
     draw_failures = 0
     while True:
-        settings.reload()
+        changed_settings = settings.reload()
         t = time.time()
+        # Nudge the screen every 30 s, and at once if the settings just changed.
+        if screen and (changed_settings or t - last_screen >= 30):
+            last_screen = t
+            for msg in screen.apply(settings.data, dt.datetime.now(),
+                                    force=changed_settings):
+                print("screen:", msg, flush=True)
         if t - last_fetch >= settings["refresh_seconds"] or not cols:
             last_fetch = t
             try:
