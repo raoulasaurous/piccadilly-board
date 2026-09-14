@@ -16,5 +16,13 @@
   ],
   "rows": 5,
   "refresh_seconds": 30,
-  "app_key": ""
+  "app_key": "",
+  "brightness": 100,
+  "brightness_dim": 30,
+  "dim_enabled": true,
+  "off_overnight": false,
+  "day_from": "07:00",
+  "dim_from": "21:00",
+  "off_from": "00:00",
+  "off_until": "06:00"
 }
