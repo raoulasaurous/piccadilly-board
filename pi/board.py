@@ -314,20 +314,15 @@ def fetch(settings):
 # ---------------------------------------------------------------- drawing
 
 _font_cache = {}
-# Hammersmith One is the closest freely-licensed face to TfL's Johnston, which is
-# proprietary and not ours to ship. It comes in ONE weight, so the board separates
-# things by size and colour rather than by weight - which is what the real signs
-# do anyway. DejaVu stays as the fallback if the file is missing.
-_HERE_FONT = os.path.join(HERE, "HammersmithOne.ttf")
+# DejaVu, for its three real weights. Hammersmith One (the closest freely-licensed
+# face to TfL's proprietary Johnston) was tried and dropped: one weight only, so
+# the board lost its light/regular/bold separation.
 FONT_CANDIDATES = {
-    "regular": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "regular": ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                 "/System/Library/Fonts/HelveticaNeue.ttc"],
-    "bold": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
-             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "bold": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
              ("/System/Library/Fonts/HelveticaNeue.ttc", 1)],
-    "light": [_HERE_FONT, "/opt/tubeboard/HammersmithOne.ttf",
-              "/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf",
+    "light": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
               ("/System/Library/Fonts/HelveticaNeue.ttc", 7)],
 }
@@ -395,11 +390,11 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
     bd.rectangle([ox - half_w * scale, oy - half_h * scale,
                   ox + half_w * scale, oy + half_h * scale], fill=bar_colour)
     if label:
-        size = max(6, int(half_h * 2 * scale * 0.78))
-        f = font("regular", size)
-        while bd.textlength(label, font=f) > (half_w * 2 * scale) * 0.86 and size > 6:
+        size = max(6, int(half_h * 2 * scale * 0.80))
+        f = font("bold", size)
+        while bd.textlength(label, font=f) > (half_w * 2 * scale) * 0.88 and size > 6:
             size -= 2
-            f = font("regular", size)
+            f = font("bold", size)
         bd.text((ox, oy), label, font=f, fill=WHITE, anchor="mm")
     small = big.resize((round(w / scale), round(h / scale)), Image.LANCZOS)
     img.paste(small, (round(cx - small.width / 2), round(cy - small.height / 2)))
@@ -431,8 +426,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # size, and a ragged roundel is the first thing a Londoner would notice.
     r = 3.6 * u
     cx, cy = pad + r * 1.05, pad + 3.1 * u
+    # The bar carries the line name, so the heading beside it does not repeat it.
     paste_roundel(img, cx, cy, r, line_colour,
-                  label=settings["station_name"].upper())
+                  label=line_name.upper().replace(" LINE", ""))
     tx = cx + r * 1.05 + 1.4 * u
     d.text((tx, pad + 0.4 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
     d.text((tx, pad + 3.9 * u), f"From {settings['station_name']}", font=font("light", 2.0 * u), fill=DIM)
