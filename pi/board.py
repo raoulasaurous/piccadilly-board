@@ -383,6 +383,26 @@ def label_mins(secs):
     return "due" if m <= 0 else f"{m} min"
 
 
+def ago(then, now):
+    """How long since the last good fetch, in words. This is the honest health
+    line on the board: if TfL goes quiet the number grows and keeps growing,
+    where a clock time just sits there looking plausible."""
+    if then is None:
+        return "never"
+    secs = int((now - then).total_seconds())
+    if secs < 0:
+        return "just now"
+    if secs < 10:
+        return "just now"
+    if secs < 60:
+        return f"{secs}s ago"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
 def clip(d, text, fnt, room):
     """Trim `text` with an ellipsis until it fits in `room` pixels. TfL's reasons
     are free text with no length limit - today's longest raw reason is 204
@@ -477,7 +497,7 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # the left, when we last heard from TfL on the right. From a sofa the eye
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
-    upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
+    upd = "Updated " + ago(updated, now)
     fupd = font("regular", 1.35 * u)
     d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
     # Everything on the left of this line has to stop before the timestamp.
@@ -677,8 +697,12 @@ def main():
             if draw_failures >= 5:
                 print("giving up on the screen, restarting", file=sys.stderr, flush=True)
                 raise SystemExit(1)
-        # redraw once a minute for the clock, sooner if a fetch is due
-        time.sleep(max(1.0, min(60.0 - dt.datetime.now().second, settings["refresh_seconds"] - (time.time() - last_fetch))))
+        # Redraw every 10 s. The clock only needs a minute, but the "updated Xs
+        # ago" line has to keep up or it is quietly lying, and a frame costs
+        # about a third of a second on a Pi 3.
+        time.sleep(max(1.0, min(10.0,
+                                60.0 - dt.datetime.now().second,
+                                settings["refresh_seconds"] - (time.time() - last_fetch))))
 
 
 if __name__ == "__main__":
