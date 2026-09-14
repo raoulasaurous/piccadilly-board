@@ -8,7 +8,9 @@ apt-get update
 # comitup takes over NetworkManager, and on a headless box that can drop the
 # WiFi you are connected over. Install the board first, add the hotspot second,
 # with a screen attached:  SKIP_COMITUP=1 bash install.sh
-PKGS="python3-pil python3-requests python3-numpy fonts-dejavu-core"
+# ddcutil drives the monitor's brightness over the HDMI cable, which is the
+# only way to change it once the screen is sealed in the frame.
+PKGS="python3-pil python3-requests python3-numpy fonts-dejavu-core ddcutil"
 [ -n "$SKIP_COMITUP" ] || PKGS="$PKGS comitup"
 apt-get install -y $PKGS
 
@@ -17,7 +19,7 @@ NEED_REBOOT=no
 [ -f /etc/systemd/system/tubeboard.service ] || NEED_REBOOT=yes
 
 install -d /opt/tubeboard
-cp board.py portal.py /opt/tubeboard/
+cp board.py portal.py screen.py /opt/tubeboard/
 [ -f /opt/tubeboard/settings.json ] || cp settings.json /opt/tubeboard/
 cp tubeboard.service tubeboard-portal.service /etc/systemd/system/
 
@@ -99,6 +101,10 @@ if [ -z "$SKIP_COMITUP" ] && [ -f /etc/comitup.conf ]; then
   sed -i 's/^#\? *ap_name:.*/ap_name: TubeBoard-setup/' /etc/comitup.conf
   grep -q '^ap_name:' /etc/comitup.conf || echo 'ap_name: TubeBoard-setup' >> /etc/comitup.conf
 fi
+
+# ddcutil needs i2c-dev, which is not loaded by default.
+modprobe i2c-dev 2>/dev/null || true
+grep -qx "i2c-dev" /etc/modules 2>/dev/null || echo "i2c-dev" >> /etc/modules
 
 systemctl daemon-reload
 systemctl enable tubeboard.service tubeboard-portal.service
