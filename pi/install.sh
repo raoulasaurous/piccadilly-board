@@ -100,6 +100,10 @@ systemctl disable --now getty@tty1.service || true
 if [ -z "$SKIP_COMITUP" ] && [ -f /etc/comitup.conf ]; then
   sed -i 's/^#\? *ap_name:.*/ap_name: TubeBoard-setup/' /etc/comitup.conf
   grep -q '^ap_name:' /etc/comitup.conf || echo 'ap_name: TubeBoard-setup' >> /etc/comitup.conf
+  # apt already started comitup with the stock config, so it is sitting on a
+  # hotspot name like "comitup-680". Restart it or the person setting this up in
+  # their own house is hunting for a network whose name means nothing to them.
+  systemctl restart comitup 2>/dev/null || true
 fi
 
 # ddcutil needs i2c-dev, which is not loaded by default.
