@@ -434,7 +434,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
 
     # --- two columns
     top = rule_y + 1.8 * u
-    gap = 3.0 * u
+    # A wide channel each side of the divider: the minutes in the left column and
+    # the destination in the right must not read as one line from across a room.
+    gap = 7.0 * u
     n = max(1, len(cols))
     col_w = (W - 2 * pad - gap * (n - 1)) / n
     rows_n = max(1, settings["rows"])
