@@ -354,7 +354,7 @@ def label_mins(secs):
     return "due" if m <= 0 else f"{m} min"
 
 
-def paste_roundel(img, cx, cy, r, bar_colour, scale=4):
+def paste_roundel(img, cx, cy, r, bar_colour, scale=3):
     """The Underground roundel: a red ring with a coloured bar across it.
     Against the ring's outer diameter D: bar width 1.05 D, bar height 0.22 D,
     ring thickness 0.17 D. Drawn big and shrunk, because PIL draws hard-edged
@@ -377,8 +377,17 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=4):
     img.paste(small, (round(cx - small.width / 2), round(cy - small.height / 2)))
 
 
-def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live):
-    """Same proportions as the web page: everything is a fraction of the width."""
+def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
+           ss=2):
+    """Draw the board. Everything is a fraction of the width, so the whole frame
+    is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
+    shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
+    for every circle and diagonal on the screen, not just the ones we remembered.
+    ss=1 skips it, for a slow machine."""
+    if ss > 1:
+        big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
+                     status_why, now, updated, live, ss=1)
+        return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -413,11 +422,10 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     fs = font("regular", 1.9 * u)
     # Two lines in the footer strip now: the status, and under it when we last
     # heard from TfL. Split the strip between them.
-    # Centred between the rule and the bottom of the glass, not the text margin:
-    # from a sofa the eye measures to the edge of the screen.
-    mid = (foot_rule + H) / 2
-    fy = mid - 0.82 * u
-    uy = mid + 1.09 * u
+    # One line, centred between the rule and the bottom of the glass: status on
+    # the left, when we last heard from TfL on the right. From a sofa the eye
+    # measures to the edge of the screen, not to the text margin.
+    fy = uy = (foot_rule + H) / 2
     upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
     d.text((W - pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="rm")
     x = pad
@@ -438,15 +446,16 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         col = GREEN if good else ORANGE
         # The tick and the bang are drawn, not typed: a font without the glyph
         # would put an empty box on the wall and nobody would know why.
-        r = 0.9 * u
+        r = 1.25 * u
         cy = fy
-        d.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, int(0.13 * u)))
+        d.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, round(0.17 * u)))
         if good:
-            d.line([(x + 0.55 * r, cy + 0.05 * r), (x + 0.9 * r, cy + 0.55 * r),
-                    (x + 1.5 * r, cy - 0.5 * r)], fill=col, width=max(1, int(0.15 * u)))
+            d.line([(x + 0.52 * r, cy + 0.05 * r), (x + 0.88 * r, cy + 0.55 * r),
+                    (x + 1.5 * r, cy - 0.52 * r)], fill=col, width=max(1, round(0.19 * u)),
+                   joint="curve")
         else:
-            d.line([(x + r, cy - 0.5 * r), (x + r, cy + 0.15 * r)], fill=col, width=max(1, int(0.15 * u)))
-            d.line([(x + r, cy + 0.45 * r), (x + r, cy + 0.5 * r)], fill=col, width=max(1, int(0.15 * u)))
+            d.line([(x + r, cy - 0.52 * r), (x + r, cy + 0.12 * r)], fill=col, width=max(1, round(0.19 * u)))
+            d.ellipse([x + r - 0.11 * u, cy + 0.42 * r, x + r + 0.11 * u, cy + 0.42 * r + 0.22 * u], fill=col)
         x2 = x + 2 * r + 0.7 * u
         d.text((x2, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
         # why, in the reader's own words, trimmed to what fits on the line
