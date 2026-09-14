@@ -1,0 +1,4 @@
+
+# A tar of the Pi's live config, taken before risky changes. Local safety net,
+# not source — it holds the pinned EDID and this machine's sudo rule.
+backup/
