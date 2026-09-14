@@ -51,6 +51,16 @@ LINE_NAMES = {
     # answers to this id. Kept so an old settings.json still draws a name, not "London-Overground line".
     "london-overground": "Overground",
 }
+# What the roundel bar says. Every tube line is "UNDERGROUND"; the others carry
+# their own network name, as their real roundels do.
+NETWORK = {
+    "dlr": "DLR",
+    "london-overground": "OVERGROUND",
+    "liberty": "OVERGROUND", "lioness": "OVERGROUND", "mildmay": "OVERGROUND",
+    "suffragette": "OVERGROUND", "weaver": "OVERGROUND", "windrush": "OVERGROUND",
+    "elizabeth": "ELIZABETH LINE",
+}
+
 LINE_COLOURS = {
     "bakerloo": (179, 99, 5), "central": (227, 32, 23), "circle": (255, 211, 0),
     "district": (0, 120, 42), "hammersmith-city": (243, 169, 187), "jubilee": (160, 165, 169),
@@ -426,9 +436,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # size, and a ragged roundel is the first thing a Londoner would notice.
     r = 3.6 * u
     cx, cy = pad + r * 1.05, pad + 3.1 * u
-    # The bar carries the line name, so the heading beside it does not repeat it.
-    paste_roundel(img, cx, cy, r, line_colour,
-                  label=line_name.upper().replace(" LINE", ""))
+    # The bar says what the real roundel outside a station says: the network, not
+    # the line. The line name lives in the heading beside it, so nothing repeats.
+    paste_roundel(img, cx, cy, r, line_colour, label=NETWORK.get(line, "UNDERGROUND"))
     tx = cx + r * 1.05 + 1.4 * u
     d.text((tx, pad + 0.4 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
     d.text((tx, pad + 3.9 * u), f"From {settings['station_name']}", font=font("light", 2.0 * u), fill=DIM)
