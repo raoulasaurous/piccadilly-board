@@ -335,41 +335,44 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
     d.rectangle([cx - r * 1.2, cy - 0.38 * u, cx + r * 1.2, cy + 0.38 * u], fill=line_colour)
     tx = cx + r + 1.2 * u
     d.text((tx, pad - 0.2 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
-    d.text((tx, pad + 3.0 * u), f"From {settings['station_name']}", font=font("light", 1.5 * u), fill=DIM)
+    d.text((tx, pad + 3.1 * u), f"From {settings['station_name']}", font=font("light", 2.2 * u), fill=DIM)
     clock = now.strftime("%H:%M")
     fc = font("light", 3.6 * u)
     d.text((W - pad - text_w(d, clock, fc), pad - 0.4 * u), clock, font=fc, fill=WHITE)
     upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
     fu = font("regular", 1.1 * u)
     d.text((W - pad - text_w(d, upd, fu), pad + 3.6 * u), upd, font=fu, fill=DIM)
-    rule_y = pad + 5.9 * u
+    rule_y = pad + 6.6 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
     # --- footer
-    foot_rule = H - pad - 3.0 * u
+    foot_rule = H - pad - 4.2 * u
     d.rectangle([pad, foot_rule, W - pad, foot_rule + 1], fill=RULE)
-    fy = foot_rule + 1.0 * u
-    fs = font("regular", 1.3 * u)
+    # Centre the status in the strip between the rule and the bottom of the
+    # screen rather than hanging it off the rule: on a wall this line is read
+    # from across the room, so it gets room around it.
+    fs = font("regular", 1.9 * u)
+    fy = (foot_rule + (H - pad)) / 2      # true middle; every draw below anchors "lm"
     x = pad
-    d.text((x, fy), "Status:", font=fs, fill=DIM)
+    d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
     if not live and updated is None:
         # Cold boot: the Pi is up before the network is, so the first fetch always
         # fails. There is no last update to show, and saying there is reads as a
         # fault to anyone walking past. Say what is actually happening instead.
-        d.text((x, fy), "Starting up, waiting for Transport for London", font=fs, fill=DIM)
+        d.text((x, fy), "Starting up, waiting for Transport for London", font=fs, fill=DIM, anchor="lm")
     elif not live:
-        d.text((x, fy), "No live data, showing the last update", font=fs, fill=ORANGE)
+        d.text((x, fy), "No live data, showing the last update", font=fs, fill=ORANGE, anchor="lm")
     elif not status_ok:
         # a green tick we never checked is worse than saying we do not know
-        d.text((x, fy), "Service status unknown", font=font("bold", 1.3 * u), fill=ORANGE)
+        d.text((x, fy), "Service status unknown", font=font("bold", 1.9 * u), fill=ORANGE, anchor="lm")
     else:
         good = status_text.lower() in ("good service", "no issues")
         col = GREEN if good else ORANGE
         # The tick and the bang are drawn, not typed: a font without the glyph
         # would put an empty box on the wall and nobody would know why.
-        r = 0.62 * u
-        cy = fy + 0.72 * u
+        r = 0.9 * u
+        cy = fy
         d.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, int(0.13 * u)))
         if good:
             d.line([(x + 0.55 * r, cy + 0.05 * r), (x + 0.9 * r, cy + 0.55 * r),
@@ -377,9 +380,7 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
         else:
             d.line([(x + r, cy - 0.5 * r), (x + r, cy + 0.15 * r)], fill=col, width=max(1, int(0.15 * u)))
             d.line([(x + r, cy + 0.45 * r), (x + r, cy + 0.5 * r)], fill=col, width=max(1, int(0.15 * u)))
-        d.text((x + 2 * r + 0.6 * u, fy), status_text, font=font("bold", 1.3 * u), fill=col)
-    tag = "tfl.gov.uk"
-    d.text((W - pad - text_w(d, tag, fs), fy), tag, font=fs, fill=DIM)
+        d.text((x + 2 * r + 0.7 * u, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
 
     # --- two columns
     top = rule_y + 1.8 * u
