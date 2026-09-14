@@ -228,6 +228,39 @@ def column_label(c, mine):
     return [x.upper() for x in chain if x]
 
 
+def tidy_reason(reason, line):
+    """TfL's reason reads e.g. "Piccadilly Line: Severe delays due to an earlier
+    signal failure at Bounds Green. London Buses, Great Northern ... are accepting
+    tickets via any reasonable route." On a wall we want the cause, not the line
+    name we already show, and not the ticket-acceptance boilerplate."""
+    r = (reason or "").strip()
+    if not r:
+        return ""
+    # drop the "<Line> Line: " prefix
+    if ":" in r[:40]:
+        r = r.split(":", 1)[1].strip()
+    # keep sentences until the boilerplate starts
+    keep = []
+    for sentence in r.replace("\n", " ").split(". "):
+        s = sentence.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if "accepting tickets" in low or "valid on" in low or "reasonable route" in low:
+            break
+        keep.append(s)
+        if len(". ".join(keep)) > 110:
+            break
+    out = ". ".join(keep).rstrip(" .")
+    # the severity word is already on the line in colour; do not say it twice
+    for lead in ("Severe delays due to ", "Minor delays due to ", "Delays due to ",
+                 "Part suspended due to ", "Suspended due to ", "Part closure due to "):
+        if out.lower().startswith(lead.lower()):
+            out = out[len(lead):]
+            break
+    return out[:1].upper() + out[1:] if out else ""
+
+
 def fetch(settings):
     """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
     q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
@@ -243,7 +276,7 @@ def fetch(settings):
     arrivals.sort(key=lambda a: a.get("timeToStation", 1e9))
     arrivals = dedupe(arrivals)
 
-    status_text, status_ok = None, False
+    status_text, status_ok, status_why = None, False, ""
     try:
         r = requests.get(f"{TFL}/Line/{line}/Status", params=q, timeout=10)
         r.raise_for_status()
@@ -254,6 +287,7 @@ def fetch(settings):
             worst = min(sts, key=lambda s: (1 if s.get("statusSeverity", 10) in (10, 18) else 0,
                                             s.get("statusSeverity", 10)))
             status_text, status_ok = worst["statusSeverityDescription"], True
+        status_why = tidy_reason(worst.get("reason") or "", line)
     except Exception as e:
         print("status fetch failed:", e, file=sys.stderr, flush=True)
 
@@ -273,7 +307,7 @@ def fetch(settings):
             towards = ""  # already in the heading
         rows = [(row_text(a), int(a.get("timeToStation", 0))) for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
-    return cols, status_text, status_ok
+    return cols, status_text, status_ok, status_why
 
 
 # ---------------------------------------------------------------- drawing
@@ -319,7 +353,7 @@ def label_mins(secs):
     return "due" if m <= 0 else f"{m} min"
 
 
-def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
+def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live):
     """Same proportions as the web page: everything is a fraction of the width."""
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -330,29 +364,34 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
 
     pad = 2.5 * u
     # --- header: roundel, line name, station; clock on the right
-    cx, cy, r = pad + 1.6 * u, pad + 1.9 * u, 1.6 * u
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=RED, width=int(0.55 * u))
-    d.rectangle([cx - r * 1.2, cy - 0.38 * u, cx + r * 1.2, cy + 0.38 * u], fill=line_colour)
-    tx = cx + r + 1.2 * u
+    # The roundel stands the full height of the line name plus the station line,
+    # so it reads as the mark it is rather than a bullet point.
+    r = 3.0 * u
+    cx, cy = pad + r, pad + 2.8 * u
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=RED, width=int(0.62 * u))
+    d.rectangle([cx - r * 1.2, cy - 0.66 * u, cx + r * 1.2, cy + 0.66 * u], fill=line_colour)
+    tx = cx + r * 1.2 + 1.4 * u
     d.text((tx, pad - 0.2 * u), line_name.upper(), font=font("regular", 3.2 * u), fill=WHITE)
     d.text((tx, pad + 3.1 * u), f"From {settings['station_name']}", font=font("light", 2.2 * u), fill=DIM)
     clock = now.strftime("%H:%M")
-    fc = font("light", 3.6 * u)
-    d.text((W - pad - text_w(d, clock, fc), pad - 0.4 * u), clock, font=fc, fill=WHITE)
-    upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
-    fu = font("regular", 1.1 * u)
-    d.text((W - pad - text_w(d, upd, fu), pad + 3.6 * u), upd, font=fu, fill=DIM)
+    fc = font("light", 5.4 * u)
+    d.text((W - pad, cy), clock, font=fc, fill=WHITE, anchor="rm")
     rule_y = pad + 6.6 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
     # --- footer
-    foot_rule = H - pad - 4.2 * u
+    foot_rule = H - pad - 4.9 * u
     d.rectangle([pad, foot_rule, W - pad, foot_rule + 1], fill=RULE)
     # Centre the status in the strip between the rule and the bottom of the
     # screen rather than hanging it off the rule: on a wall this line is read
     # from across the room, so it gets room around it.
     fs = font("regular", 1.9 * u)
-    fy = (foot_rule + (H - pad)) / 2      # true middle; every draw below anchors "lm"
+    # Two lines in the footer strip now: the status, and under it when we last
+    # heard from TfL. Split the strip between them.
+    fy = foot_rule + 1.5 * u
+    uy = foot_rule + 3.3 * u
+    upd = f"Last updated: {updated.strftime('%H:%M') if updated else '--:--'}"
+    d.text((pad, uy), upd, font=font("regular", 1.35 * u), fill=DIM, anchor="lm")
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
@@ -380,7 +419,18 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
         else:
             d.line([(x + r, cy - 0.5 * r), (x + r, cy + 0.15 * r)], fill=col, width=max(1, int(0.15 * u)))
             d.line([(x + r, cy + 0.45 * r), (x + r, cy + 0.5 * r)], fill=col, width=max(1, int(0.15 * u)))
-        d.text((x + 2 * r + 0.7 * u, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
+        x2 = x + 2 * r + 0.7 * u
+        d.text((x2, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
+        # why, in the reader's own words, trimmed to what fits on the line
+        if status_why:
+            x2 += text_w(d, status_text, font("bold", 1.9 * u)) + 1.0 * u
+            why = status_why
+            room = (W - pad) - x2
+            while why and text_w(d, why + "...", fs) > room:
+                why = why.rsplit(" ", 1)[0]
+            if why:
+                d.text((x2, fy), why + ("..." if why != status_why else ""),
+                       font=fs, fill=DIM, anchor="lm")
 
     # --- two columns
     top = rule_y + 1.8 * u
@@ -487,17 +537,17 @@ def main():
     settings = Settings()
     if args.png:
         W, H = (int(v) for v in args.size.split("x"))
-        cols, status, status_ok = fetch(settings)
+        cols, status, status_ok, status_why = fetch(settings)
         now = dt.datetime.now()
-        render(W, H, settings, cols, status, status_ok, now, now, True).save(args.png)
+        render(W, H, settings, cols, status, status_ok, status_why, now, now, True).save(args.png)
         print("wrote", args.png, flush=True)
         return
 
     fb = Framebuffer()
-    cols, status, status_ok, updated, live = [], None, False, None, False
+    cols, status, status_ok, status_why, updated, live = [], None, False, "", None, False
     # draw once before the first fetch: a blank wall screen reads as a dead unit, and
     # with no WiFi the first request can hold for its full ten seconds
-    fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, dt.datetime.now(), updated, live))
+    fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
     last_fetch = 0.0
     failures = 0
     draw_failures = 0
@@ -507,7 +557,7 @@ def main():
         if t - last_fetch >= settings["refresh_seconds"] or not cols:
             last_fetch = t
             try:
-                cols, status, status_ok = fetch(settings)
+                cols, status, status_ok, status_why = fetch(settings)
                 updated, live, failures = dt.datetime.now(), True, 0
             except Exception as e:
                 failures += 1
@@ -516,7 +566,7 @@ def main():
                 if failures >= max(1, 180 // settings["refresh_seconds"]):
                     live = False
         try:
-            fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, dt.datetime.now(), updated, live))
+            fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
