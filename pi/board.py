@@ -353,7 +353,12 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM)
     x += text_w(d, "Status:", fs) + 0.8 * u
-    if not live:
+    if not live and updated is None:
+        # Cold boot: the Pi is up before the network is, so the first fetch always
+        # fails. There is no last update to show, and saying there is reads as a
+        # fault to anyone walking past. Say what is actually happening instead.
+        d.text((x, fy), "Starting up, waiting for Transport for London", font=fs, fill=DIM)
+    elif not live:
         d.text((x, fy), "No live data, showing the last update", font=fs, fill=ORANGE)
     elif not status_ok:
         # a green tick we never checked is worse than saying we do not know
@@ -396,7 +401,9 @@ def render(W, H, settings, cols, status_text, status_ok, now, updated, live):
                    f"towards {c['towards']}", font=font("light", 1.3 * u), fill=DIM)
         rows = c["rows"]
         if not rows:
-            d.text((x0, rows_top + 0.5 * u), "No trains reported", font=font("light", 1.8 * u), fill=DIM)
+            msg = "No trains reported" if updated else ""
+            if msg:
+                d.text((x0, rows_top + 0.5 * u), msg, font=font("light", 1.8 * u), fill=DIM)
             continue
         dot_x = x0 + 0.5 * u
         fd, fm = font("regular", 2.0 * u), font("regular", 2.0 * u)
