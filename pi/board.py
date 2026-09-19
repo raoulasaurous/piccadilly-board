@@ -13,6 +13,7 @@ rewrites that file; the board notices within one refresh.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse as up
@@ -154,6 +155,9 @@ def tidy_towards(s):
 
 
 COMPASS = ("northbound", "southbound", "eastbound", "westbound", "inner rail", "outer rail")
+OPPOSITE = {"Northbound": "Southbound", "Eastbound": "Westbound",
+            "Inner Rail": "Outer Rail"}
+OPPOSITE.update({v: k for k, v in OPPOSITE.items()})
 
 
 def heading(a):
@@ -318,6 +322,16 @@ def tidy_reason(reason, line):
     # drop the "<Line> Line: " prefix
     if ":" in r[:40]:
         r = r.split(":", 1)[1].strip()
+    # A planned closure leads with its dates - "Saturday 19 September, from 0130 and
+    # all day Sunday 20 September, no service between Acton Town and Uxbridge" - and
+    # the dates are the part a reader standing in front of the board already knows.
+    # The clause that says what is shut is the one that explains the empty column, so
+    # start there, and let the clip take the dates instead.
+    m = re.search(r"\b(no service|no through service|severe delays|minor delays|"
+                  r"suspended|part suspended|closed|part closure|reduced service|"
+                  r"replacement bus)\b", r, re.I)
+    if m and m.start():
+        r = r[m.start():]
     # keep sentences until the boilerplate starts
     keep = []
     for sentence in r.replace("\n", " ").split(". "):
@@ -387,6 +401,15 @@ def fetch(settings):
             towards = ""  # already in the heading
         rows = [(row_text(a), int(a.get("timeToStation", 0))) for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
+
+    # One direction running, and we can name the other one: keep the second column and
+    # let it say it is empty. Collapsing to a single full-width column reads as a
+    # broken board, and it is usually a closure - which the status line is already
+    # carrying, so the two halves explain each other.
+    if len(cols) == 1 and len(settings["columns"]) == 2:
+        other = OPPOSITE.get(cols[0]["label"].title())
+        if other:
+            cols.append({"label": other.upper(), "towards": "", "rows": []})
     return cols, status_text, status_ok, status_why
 
 
@@ -426,12 +449,18 @@ def explain(settings):
         for dest, secs in c["rows"]:
             print(f'      {label_mins(secs):>6}  {dest}')
 
-    if len(cols) < 2:
-        print("\nOne column means TfL reported trains going one way only. At a terminus")
-        print("that is the truth. Anywhere else, check the station id above: a station")
+    empty = [c["label"] for c in cols if not c["rows"]]
+    if empty and len(cols) > 1:
+        print(f"\n{', '.join(empty)} is empty because TfL sent no trains that way. Check the")
+        print("status line above first - a closure or a suspension is the usual reason,")
+        print("and then the board is right. Otherwise check the station id: a station")
         print("that is one name on the map can be two stop points at TfL, and only one")
         print("of them carries both directions. Search it again in the portal and pick")
         print("the other result, or put the id straight into settings.json.")
+    elif len(cols) < 2:
+        print("\nOne column, and the board could not name the missing direction, so the")
+        print("trains it did get do not agree on a platform heading. The platform list")
+        print("above says what TfL actually sent.")
 
 
 # ---------------------------------------------------------------- drawing
