@@ -186,16 +186,72 @@ def row_text(a):
 
 def dedupe(arrivals):
     """The DLR files one prediction per platform for the same train, and vehicleId is
-    empty, so the same train would be drawn twice. Match on destination plus time."""
+    empty, so the same train would be drawn twice. Match on destination plus time.
+
+    Never across a direction, though: the two DLR predictions carry no direction and a
+    bare "Platform 1", so they still collapse, while two trains that say plainly they
+    are going opposite ways are two trains. Without that, the Circle line's rails eat
+    each other - both run to Hammersmith, and whenever the pair fell within the same
+    few seconds one rail lost the train, and a rail could lose enough of them to
+    empty its column."""
     seen, out = [], []
     for a in arrivals:
         k = a.get("destinationNaptanId") or a.get("destinationName", "")
         t = int(a.get("timeToStation", 0))
-        if any(k == sk and abs(t - st) <= 5 for sk, st in seen):
+        h, dirn = heading(a), a.get("direction") or ""
+        # a blank on either side is "not stated", which contradicts nothing
+        if any(k == sk and abs(t - st) <= 5
+               and not (h and sh and h != sh)
+               and not (dirn and sd and dirn != sd)
+               for sk, st, sh, sd in seen):
             continue
-        seen.append((k, t))
+        seen.append((k, t, h, dirn))
         out.append(a)
     return out
+
+
+def split_by(arrivals, key):
+    """Group the arrivals by key(), for the columns. Returns the groups in a fixed
+    order, or None if this key cannot carry the board.
+
+    A train the key cannot name does not throw the split away - one train at
+    "Platform Unknown" used to cost the whole Eastbound/Westbound split and leave the
+    reader one mixed column. It is placed with the trains that already run to its
+    destination, or that share its direction. If it can be placed by neither, then the
+    split is refused after all: a train under the wrong heading sends someone to the
+    wrong platform, which is worse than a board with no headings on it.
+    """
+    keys = [key(a) for a in arrivals]
+    names = sorted({k for k in keys if k})  # sorted, so columns cannot swap sides
+    if len(names) < 2:
+        return None
+    groups = {n: [a for a, k in zip(arrivals, keys) if k == n] for n in names}
+
+    # which group a destination and a direction already belong to, and only where
+    # the whole answer is one group - two candidates is not an answer
+    by_dest, by_dir = {}, {}
+    for n, mine in groups.items():
+        for x in mine:
+            dest = tidy_destination(x.get("destinationName") or "")
+            if dest:
+                by_dest.setdefault(dest, set()).add(n)
+            if x.get("direction"):
+                by_dir.setdefault(x["direction"], set()).add(n)
+
+    for a, k in zip(arrivals, keys):
+        if k:
+            continue
+        for table, v in ((by_dest, tidy_destination(a.get("destinationName") or "")),
+                         (by_dir, a.get("direction"))):
+            home = table.get(v) if v else None
+            if home and len(home) == 1:
+                groups[next(iter(home))].append(a)
+                break
+        else:
+            return None
+    for mine in groups.values():
+        mine.sort(key=lambda x: x.get("timeToStation", 1e9))
+    return [groups[n] for n in names]
 
 
 def group(arrivals, columns):
@@ -231,12 +287,9 @@ def group(arrivals, columns):
     for key in (heading,
                 lambda a: tidy_towards(a.get("towards", "") or ""),
                 lambda a: tidy_destination(a.get("destinationName", "") or "")):
-        keys = [key(a) for a in arrivals]
-        if not all(keys):
-            continue  # a key that some arrivals lack would drop those trains
-        names = sorted(set(keys))  # sorted, so the columns cannot swap sides on a refresh
-        if 2 <= len(names) <= max(2, len(columns)):
-            return [(None, [a for a, k in zip(arrivals, keys) if k == n]) for n in names]
+        parts = split_by(arrivals, key)
+        if parts and 2 <= len(parts) <= max(2, len(columns)):
+            return [(None, p) for p in parts]
     return [(None, list(arrivals))]  # nothing splits them: one column, drawn full width
 
 
@@ -335,6 +388,50 @@ def fetch(settings):
         rows = [(row_text(a), int(a.get("timeToStation", 0))) for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
     return cols, status_text, status_ok, status_why
+
+
+def explain(settings):
+    """Say what TfL answers for the configured station and what the board makes of it.
+
+    The first thing to run when a direction is missing from the screen: it separates
+    "TfL is not telling us about those trains" from "we were told and mislaid them",
+    and those have very different fixes."""
+    q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
+    line = up.quote(settings["line"], safe="")
+    stop = up.quote(settings["station_id"], safe="")
+    url = f"{TFL}/Line/{line}/Arrivals/{stop}"
+    print(f'{settings["station_name"]}  [{settings["station_id"]}]  {settings["line"]} line')
+    print(url + "\n")
+
+    r = requests.get(url, params=q, timeout=10)
+    r.raise_for_status()
+    raw = r.json()
+    if not isinstance(raw, list):
+        raise ValueError("arrivals: unexpected response")
+    print(f"TfL returned {len(raw)} prediction(s)")
+    tally = Counter((a.get("platformName") or "(no platform)",
+                     a.get("direction") or "(no direction)") for a in raw)
+    for (plat, dirn), n in sorted(tally.items()):
+        print(f"  {n:3d}  {plat:<26}  direction={dirn}")
+
+    raw.sort(key=lambda a: a.get("timeToStation", 1e9))
+    lost = len(raw) - len(dedupe(raw))
+    if lost:
+        print(f"\n  {lost} of those are duplicate predictions for the same train")
+
+    cols, _, _, _ = fetch(settings)
+    print(f"\nThe board draws {len(cols)} column(s):")
+    for c in cols:
+        print("  " + c["label"] + (f'  towards {c["towards"]}' if c["towards"] else ""))
+        for dest, secs in c["rows"]:
+            print(f'      {label_mins(secs):>6}  {dest}')
+
+    if len(cols) < 2:
+        print("\nOne column means TfL reported trains going one way only. At a terminus")
+        print("that is the truth. Anywhere else, check the station id above: a station")
+        print("that is one name on the map can be two stop points at TfL, and only one")
+        print("of them carries both directions. Search it again in the portal and pick")
+        print("the other result, or put the id straight into settings.json.")
 
 
 # ---------------------------------------------------------------- drawing
@@ -641,9 +738,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--png", help="render one frame to this file and exit")
     ap.add_argument("--size", default="1920x1080", help="frame size for --png")
+    ap.add_argument("--explain", action="store_true",
+                    help="print what TfL returns for this station and how it is split "
+                         "into columns, then exit")
     args = ap.parse_args()
 
     settings = Settings()
+    if args.explain:
+        explain(settings)
+        return
     if args.png:
         W, H = (int(v) for v in args.size.split("x"))
         cols, status, status_ok, status_why = fetch(settings)
