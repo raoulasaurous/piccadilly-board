@@ -82,9 +82,15 @@ Prints what TfL answers for the configured station — how many predictions, on
 which platforms, with which direction — and then the columns the board makes of
 them. That separates the two causes, which have different fixes:
 
-- **TfL sent trains one way only.** At a terminus that is simply the truth. Anywhere
-  else, suspect the station id: a station that is one name on the map can be two
-  stop points at TfL, and only one of them carries both directions. Search the
-  station again in the portal and pick the other result.
+- **TfL sent trains one way only.** Read the status line first: during a closure or a
+  suspension there really are no trains the other way, and the board is right to show
+  that column empty. At a terminus it is the truth too. Otherwise suspect the station
+  id — a station that is one name on the map can be two stop points at TfL, and only
+  one of them carries both directions. Search the station again in the portal and pick
+  the other result.
 - **TfL sent both ways and the board drew one column.** That is a bug here. Keep the
   output — it holds the platform names and directions needed to fix it.
+
+A direction with no trains keeps its column and says "No trains reported" under it,
+rather than letting the other direction go full width: an empty column is a fact
+about the service, and a board that quietly reshapes itself just looks broken.
