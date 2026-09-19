@@ -2,3 +2,8 @@
 # A tar of the Pi's live config, taken before risky changes. Local safety net,
 # not source — it holds the pinned EDID and this machine's sudo rule.
 backup/
+
+# Rendered from case/sled.py by ~/.claude/tools/cad_viewport.py on the Mac;
+# published as an artifact, so the page itself is not source.
+case/viewer.html
+case/viewer.html.png
