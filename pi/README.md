@@ -71,3 +71,20 @@ with no button pressed on the screen.
 python3 board.py --png out.png
 ```
 Renders one frame with live data to a file. Works on a Mac.
+
+## A direction is missing from the screen
+
+```bash
+python3 board.py --explain
+```
+
+Prints what TfL answers for the configured station — how many predictions, on
+which platforms, with which direction — and then the columns the board makes of
+them. That separates the two causes, which have different fixes:
+
+- **TfL sent trains one way only.** At a terminus that is simply the truth. Anywhere
+  else, suspect the station id: a station that is one name on the map can be two
+  stop points at TfL, and only one of them carries both directions. Search the
+  station again in the portal and pick the other result.
+- **TfL sent both ways and the board drew one column.** That is a bug here. Keep the
+  output — it holds the platform names and directions needed to fix it.
