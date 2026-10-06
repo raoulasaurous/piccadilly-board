@@ -30,7 +30,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | The Pi itself | **Unplugged by Raoul on the evening of 6 Oct.** Whether `shutdown -h` ran first is not recorded. A brownout corrupted the card once before; if the board does not come up, suspect the card first. Where it is plugged in next is Raoul's call. |
 | What the recipient wants on it | Highbury & Islington (Victoria line), Drayton Park (Great Northern), and Arsenal as it is. Rotation 30 s. |
 | National Rail key | **Not yet obtained.** Raoul registers at raildata.org.uk (below). Without it the Drayton Park board says so on the screen and shows nothing else. |
-| Tested | 138 offline checks pass (`pi/test_rotation.py`). **Nothing from tonight has run on the Pi, and the rail client has never called the real feed.** |
+| Tested | 159 offline checks (`pi/test_rotation.py`) and 18 in headless Chrome (`test_index.py`) pass. Two review passes, 62 findings reproduced and fixed. **Nothing from tonight has run on the Pi, and the rail client has never called the real feed.** |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Raspberry Pi Connect, signed in 14 Sept, still signed in on 17 Sept, survives reboots |
@@ -42,9 +42,10 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 
 ```bash
 cd ~/Downloads/piccadilly-board && git checkout main && git pull
-cd pi && python3 test_rotation.py            # 138 checks, no network needed
+cd pi && python3 test_rotation.py            # 159 checks, no network needed
 python3 board.py --png /tmp/b.png            # live TfL: the Mac can reach it, this session could not
 python3 board.py --png /tmp/s.png --setup    # the WiFi setup screen
+cd .. && python3 test_index.py               # the web version, in headless Chrome (18 checks)
 ```
 
 Then, in this order:
@@ -92,6 +93,11 @@ python3 board.py --explain
 made of it. Both columns on each is the check. **Run it in `/opt/tubeboard`**,
 not in the clone: the live settings are there. That trap cost an hour once.
 
+What the screen does on every boot from now on: "Starting up" for the first
+minute; if comitup is still on its hotspot after that, the setup screen; the
+board as soon as a fetch lands. A power cut in the recipient's house therefore
+shows the board, not setup instructions, unless the WiFi really is gone.
+
 The `sudo` on the writing commands is because the installer and the service
 write `settings.json` as root. Without it the command ends in one line saying
 so. Optional extra boards: `--add-station "Highbury & Islington" --line mildmay`
@@ -102,7 +108,8 @@ so. Optional extra boards: `--add-station "Highbury & Islington" --line mildmay`
 sudo cp /opt/tubeboard.bak-<date>/*.py /opt/tubeboard/ && sudo systemctl restart tubeboard tubeboard-portal
 ```
 The old `board.py` ignores the new keys in `settings.json` and shows the first
-TfL board on the rotation, so the settings can stay.
+TfL board on the rotation, so the settings can stay. The backup has no `rail.py`
+or `netdiag.py`; leave the new ones in place, the old programs never import them.
 
 **Shut down before pulling power:** `sudo shutdown -h now`.
 
@@ -140,8 +147,16 @@ Board service through the Rail Data Marketplace:
   Inbound is a train to a London terminus (`LONDON_TERMINI`); the platform name
   carries the line's compass word (`LINES[...]["inbound"]`, Southbound for Great
   Northern) so the two columns read as TfL's do. Cancelled trains are left out.
-  A delayed train with no estimate keeps its timetable time. A train that left
-  more than two minutes ago is dropped.
+  A train the feed calls "Delayed" with no estimate stays, and once its timetable
+  time has gone its row says `delayed` instead of minutes. A train that left more
+  than two minutes ago is dropped. Minutes are measured against the feed's own
+  clock (`generatedAt`), because the Pi's is wrong for a moment after every power
+  cut until NTP steps it. Two services expected the same minute are two rows.
+- No key, a refused key, or a stop the feed does not know is said on the screen
+  in those words ("Rail key needed", "...does not know this stop"), never as
+  "not answering": those are this board's problems, and the WiFi is not asked.
+- Thameslink is not in the operator table: it runs through London, so "a train
+  to a London terminus is inbound" cannot name its directions.
 - A station entry is `{"source": "national-rail", "line": "great-northern",
   "station_id": "DYP", "station_name": "Drayton Park"}`. The status line stays
   TfL's: it publishes one for the operators under the same line ids.
@@ -153,38 +168,49 @@ Board service through the Rail Data Marketplace:
 
 **Written blind.** The feed's JSON field names are taken from the SOAP-era
 schema, which the REST version mirrors, and `_get()` accepts both camelCase and
-PascalCase. If the first live call shows different names, `rail.py` is the one
-file to fix, and `test_rotation.py`'s `RAIL_BOARD` is the shape to correct.
+PascalCase. The `via` field is assumed to carry the word ("via Hertford North"),
+as Darwin's reference data does; the code strips it, and is a no-op if the feed
+sends the bare place. If the first live call shows different names, `rail.py`
+is the one file to fix, and `test_rotation.py`'s `RAIL_BOARD` is the shape to
+correct.
 
 ## The WiFi screen and the diagnosis
 
 The ticker's lesson: the device knew exactly which failure it had and wrote it
 to a port nobody could see, while the panel said "...". This screen can say it.
 
-- **HOTSPOT** (comitup has no network to join): `render_setup()` draws JOIN
-  WIFI, the hotspot's name large, a QR code (`WIFI:T:nopass;S:<name>;;`, dark on
-  light because phone cameras read inverted codes badly) and three steps naming
-  `http://10.41.0.1`. The name comes from `/etc/comitup.conf` (`netdiag.hotspot_name()`).
+- **HOTSPOT** (comitup has no network to join, for more than a minute after the
+  board started): `render_setup()` draws JOIN WIFI, the hotspot's name large, a
+  QR code (`WIFI:T:nopass;S:<name>;;`, or the WPA form if `ap_password` is set;
+  dark on light because phone cameras read inverted codes badly) and three steps
+  naming `http://10.41.0.1`. Name and password come from `/etc/comitup.conf`.
 - **CONNECTING**: WIFI OK and the network's name.
-- **CONNECTED but no trains**: a normal board with one footer line from
-  `netdiag.verdict()`: No internet on X / WiFi needs sign-in / Transport for
-  London (or National Rail) not answering. The checks (`comitup-cli i`, `ip`,
-  `nmcli`, DNS, a plain-http `generate_204` probe) run only after a failed fetch
-  and at most every 30 s. A good fetch clears everything.
+- **CONNECTED but no trains**: a normal board with one footer line. If the feed
+  answered with a refusal (no key, key refused, 404 for the stop, 429) the line
+  is that, in the fetch's words. Otherwise `netdiag.verdict()`: No internet on X /
+  WiFi needs sign-in / Transport for London (or National Rail) not answering. The
+  network checks (`comitup-cli i`, which prints `HOTSPOT state`; `ip`; `nmcli`;
+  DNS; a plain-http `generate_204` probe) run only after such a failure and at
+  most every 30 s. A good fetch clears everything. The journal gets a `network:`
+  line when the verdict changes, and one `fetch failed` line per distinct error,
+  not one per pass.
 - For the first three minutes after a boot the footer's right corner shows the
   board's own address instead of the update age.
 - **Forget the WiFi**: on the page (type FORGET) or `sudo python3 portal.py
-  --forget-wifi`. Deletes every saved network except comitup's hotspot; comitup
-  raises the hotspot within a minute; the board keeps drawing. This is hand-over
-  step 1 below, which used to be done by hand with nmcli. Over Pi Connect it cuts
-  your own connection, by design.
+  --forget-wifi`. Deletes every saved network that is not an access point:
+  comitup's own hotspot connection is named `<ap_name>-0000`, not the ssid, and
+  comitup only remakes it at service start, so it is told apart by asking
+  NetworkManager its mode, never by its name. comitup raises the hotspot within a
+  minute; the board keeps drawing. This is hand-over step 1 below, which used to
+  be done by hand with nmcli. Over Pi Connect it cuts your own connection, by design.
 
-**Unverified on hardware:** that `comitup-cli i` prints the `State:` line non-
-interactively (if not, `netdiag.state()` falls back to the hotspot address on
-`wlan0` and then to `nmcli general`); that iOS joins an open network from a
-`WIFI:` QR; that `connectivitycheck.gstatic.com/generate_204` is reachable from
-the house; that `python3-qrcode` installs under that name on trixie (without it
-the screen says the name in words). First boot on the real Pi settles all four.
+**Unverified on hardware:** that iOS joins an open network from a `WIFI:` QR;
+that `connectivitycheck.gstatic.com/generate_204` is reachable from the house;
+that `python3-qrcode` installs under that name on trixie (without it the screen
+says the name in words); that nmcli's terse output escapes a colon in a name
+as `\:` (handled, from the man page). First boot on the real Pi settles them.
+comitup's one-shot output and its connection naming were checked against its
+source (`davesteele/comitup`, 1.30 to 1.47.1).
 
 ## Where things live
 
@@ -192,8 +218,10 @@ the screen says the name in words). First boot on the real Pi settles all four.
   `install.sh`, `bench.sh`, `test_rotation.py`, the systemd units. `pi/README.md`
   is the user-facing guide and matches the code as of tonight.
 - `index.html` - the web version, live at raoulasaurous.github.io/piccadilly-board.
-  One station, TfL only, and it still filters strictly on `direction` (see Still
-  to do).
+  One station, TfL only. As of tonight it carries the Pi board's column logic
+  (headings from the trains, an empty direction kept, the worst status with its
+  cause, "no live data" with an age) and `test_index.py` at the root drives it
+  in headless Chrome.
 - `case/sled.py` - the Pi mounting sled (manifold3d). `cd case && python3 sled.py`
   rebuilds the three STLs.
 - Artifacts, private to Raoul's claude.ai account (update in place with `url=`):
@@ -271,15 +299,13 @@ In rough order:
    how it refuses a pull that lands broken code on a wall nobody can reach: a
    health check after restart (both columns drawn within two minutes, else
    restore the dated backup) is the minimum.
-3. **`index.html` has the bug the Pi board fixed on 19 Sept.** It filters
-   strictly on `a.direction === c.api` (around line 357), so any station where TfL
-   omits `direction` shows two empty columns while trains are due. `pi/board.py`
-   has the full fallback ladder (`group()`, `split_by()`, `column_label()`). It
-   also cannot rotate. The web version is the one in Raoul's pocket, so this
-   matters more than it did.
+3. **`index.html` cannot rotate**, and its line name, colour and roundel are
+   fixed to the Piccadilly in the markup. The direction bug it carried since
+   19 Sept is fixed as of tonight. A one-destination board (the DLR shape) leaves
+   its second column blank where the Pi goes full width.
 4. **The rail board's finer points, once the feed has been seen live:** a
-   cancelled train is dropped rather than shown struck through; "Delayed" with no
-   estimate shows the timetable time; the roundel says NATIONAL RAIL.
+   cancelled train is dropped rather than shown struck through; the roundel says
+   NATIONAL RAIL; London termini are a hand-kept list in `rail.py`.
 5. The physical build (below), which waits on Raoul's measurements.
 
 ## Physical build
@@ -336,11 +362,15 @@ https://southbankart.co.uk/products/custom-window-mount): 457 x 305, opening
 
 ## Settings on the Pi
 
-Station Arsenal (`940GZZLUASL`), line `piccadilly`, 5 rows, fetch every 30 s,
-redraw every 10 s, rotation 30 s once there is more than one board. Brightness
-100% from 07:00, 30% from 21:00. Off-overnight exists but is off. `screen.py`
-fails safe. New keys tonight: `source`, `stations`, `rotate_seconds`,
-`rail_api_key`, `rail_api_url`; an old file without them behaves as before.
+Station Arsenal (`940GZZLUASL`), line `piccadilly`, 5 rows (clamped 1-8), fetch
+every 30 s, redraw every 10 s, rotation 30 s once there is more than one board.
+Brightness 100% from 07:00, 30% from 21:00. Off-overnight exists but is off.
+`screen.py` fails safe, and the board survives it not. New keys tonight:
+`source`, `stations`, `rotate_seconds`, `rail_api_key`, `rail_api_url`; an old
+file without them behaves as before. A hand edit that leaves a number where a
+list goes, a quoted number, or a trailing comma is survived by the board (it
+keeps the old settings and says so in the journal) and refused by the portal
+with a sentence, never silently overwritten.
 
 ## Before it goes to the recipient
 

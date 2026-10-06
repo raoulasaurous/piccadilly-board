@@ -17,7 +17,7 @@ stations come from National Rail's own feed with a free key.
 | `settings.json` | Stations, lines, rows, refresh, rotation, the rail key. The portal writes it, the board reloads it |
 | `install.sh` | One-shot install on Raspberry Pi OS Lite, and the way to deploy a change |
 | `bench.sh` | The power test: logs the Pi's under-voltage flag once a minute |
-| `test_rotation.py` | 138 offline checks. Every feed and every command is stubbed, so it runs anywhere |
+| `test_rotation.py` | 159 offline checks. Every feed and every command is stubbed, so it runs anywhere |
 | `*.service` | systemd units so both programs start at boot and restart if they die |
 
 ## Set up the card (on a Mac or PC)
@@ -92,10 +92,12 @@ Marketplace. That needs a free key:
 
 Then under **National Rail** on the settings page: the station's three-letter
 code (DYP for Drayton Park; every National Rail timetable shows them), the
-operator, and the key. The key is saved once and kept. Trains to a London
-terminus are the southbound (or inbound) column; the rest are the other.
-Cancelled trains are left out; a delayed one with no estimate keeps its
-timetable time.
+operator, and the key. The key is saved once and kept (typing it later, for a
+station already on the list, saves it too). Trains to a London terminus are the
+southbound (or inbound) column; the rest are the other. Cancelled trains are
+left out; a delayed one with no estimate stays and its row says "delayed" once
+its time has gone. If the key is missing or wrong the screen says so in those
+words; if the feed does not know the station code, likewise.
 
 ## From a shell, when the page is out of reach
 
@@ -122,11 +124,13 @@ URL on TfL's own site: `piccadilly`, `victoria`, `mildmay`, `windrush`,
 
 ## WiFi
 
-With no known WiFi the Pi starts its own hotspot, **TubeBoard-setup**, and the
-screen says so: JOIN WIFI, the name large, a QR code a phone camera reads as an
-offer to join, and the three steps. Join it, and a page appears to choose the
-home WiFi and type its password. While that join is happening the screen says
-WIFI OK and which network. Then the trains come up.
+With no known WiFi the Pi starts its own hotspot, **TubeBoard-setup**, and
+after a minute the screen says so: JOIN WIFI, the name large, a QR code a phone
+camera reads as an offer to join, and the three steps. Join it, and a page
+appears to choose the home WiFi and type its password. While that join is
+happening the screen says WIFI OK and which network. Then the trains come up.
+(The minute's wait is because the Pi raises its hotspot briefly on every boot
+before joining the known WiFi; a power cut should not show setup instructions.)
 
 When the WiFi is there but the trains are not, the footer says which it is:
 **No internet** on that network, **WiFi needs sign-in** (a cafe or hotel page
@@ -172,7 +176,7 @@ there draws board 1 and says so; the rotation lives in `/opt/tubeboard`.
 ```bash
 python3 test_rotation.py
 ```
-138 checks with every feed and command stubbed, so it runs with no network at
+159 checks with every feed and command stubbed, so it runs with no network at
 all. Run it before deploying a change to how the boards are picked or drawn.
 
 ## A direction is missing from the screen
