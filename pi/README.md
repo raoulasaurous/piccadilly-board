@@ -1,19 +1,24 @@
 # Tube board on a Raspberry Pi
 
-Live departure board for one Underground station, drawn straight to an HDMI
-screen by a Raspberry Pi. No desktop, no browser. Data from TfL's open API,
-no key needed.
+Live departure board for a London station, drawn straight to an HDMI screen by a
+Raspberry Pi. No desktop, no browser. One station, or several in turn. Tube, DLR,
+Elizabeth line and Overground come from TfL's open API with no key; National Rail
+stations come from National Rail's own feed with a free key.
 
 ## Files
 
 | File | What |
 |---|---|
-| `board.py` | Fetches TfL every 30 s, draws the board with Pillow, writes it to `/dev/fb0` |
-| `portal.py` | Settings page on the home network: search a station, pick the line, save |
-| `settings.json` | Station, line, rows, refresh. The portal writes it, the board reloads it |
-| `install.sh` | One-shot install on Raspberry Pi OS Lite |
+| `board.py` | Fetches the trains, draws the board with Pillow, writes it to `/dev/fb0`. Also the WiFi setup screen |
+| `portal.py` | Settings page on the home network, and the same settings from a shell |
+| `rail.py` | National Rail departures, turned into the shape TfL sends so the rest of the board never notices |
+| `netdiag.py` | Why there are no trains, in words: no WiFi, needs sign-in, no internet, or the feed is down |
+| `screen.py` | Brightness and power over the HDMI cable (DDC/CI) |
+| `settings.json` | Stations, lines, rows, refresh, rotation, the rail key. The portal writes it, the board reloads it |
+| `install.sh` | One-shot install on Raspberry Pi OS Lite, and the way to deploy a change |
 | `bench.sh` | The power test: logs the Pi's under-voltage flag once a minute |
-| `*.service` | systemd units so both start at boot and restart if they die |
+| `test_rotation.py` | 159 offline checks. Every feed and every command is stubbed, so it runs anywhere |
+| `*.service` | systemd units so both programs start at boot and restart if they die |
 
 ## Set up the card (on a Mac or PC)
 
@@ -33,18 +38,109 @@ sudo reboot
 ```
 
 The board comes up on the screen about 30 s after power. The settings page is
-at **http://tubeboard.local:8080** on any phone on the same WiFi.
+at **http://tubeboard.local:8080** on any phone on the same WiFi, and for the
+first three minutes after a boot the board's footer says so, with the IP.
+
+## Deploy a change
+
+The board runs from `/opt/tubeboard/`, not from the clone, and there is no
+self-update. Merging is not deploying. On the Pi:
+
+```bash
+sudo cp -a /opt/tubeboard "/opt/tubeboard.bak-$(date +%F)"   # the way back
+cd ~/piccadilly-board && git pull
+cd pi && sudo SKIP_COMITUP=1 bash install.sh
+```
+
+The installer copies the programs, keeps `settings.json`, and restarts both
+services. `SKIP_COMITUP=1` leaves the WiFi hotspot alone. To roll back:
+
+```bash
+sudo cp /opt/tubeboard.bak-<date>/*.py /opt/tubeboard/ && sudo systemctl restart tubeboard tubeboard-portal
+```
 
 ## Change station
 
-Open http://tubeboard.local:8080, type a station name, tap it, tap the line. Done.
-The board redraws within a minute.
+Open http://tubeboard.local:8080, type a station name under **Show one station
+only**, tap it, tap the line. Done. The board redraws within a minute.
 
-## If the WiFi changes
+## Show more than one station
 
-With no known WiFi the Pi starts its own hotspot, **TubeBoard-setup**. Join it
-from a phone and a page appears to enter the new WiFi name and password. The
-Pi then reboots on to the new network.
+Under **Boards on the screen**, add a station. With two or more the screen cycles
+between them, 30 seconds each by default (a box under the list sets anything
+from 5 to 300), and a row of dots under the clock says which board is up and how
+many there are. **Remove** takes one off. Eight is the most, and the last one
+cannot be removed.
+
+A station on two lines is two boards: Highbury & Islington on the Victoria line
+and on the Mildmay line are added separately, each with its own roundel, colour
+and service status.
+
+Each board fetches on its own 30 s clock, only while it is the one being shown.
+At the default 30 s rotation three boards cost the same number of calls as one;
+at short intervals they cost more.
+
+## National Rail stations
+
+TfL's feed does not carry National Rail. Drayton Park is Great Northern, so it
+comes from National Rail's Live Departure Board, through the Rail Data
+Marketplace. That needs a free key:
+
+1. Make an account at **raildata.org.uk**.
+2. Subscribe to the product called **Live Departure Board** (the public one).
+3. Copy the consumer key it gives you.
+
+Then under **National Rail** on the settings page: the station's three-letter
+code (DYP for Drayton Park; every National Rail timetable shows them), the
+operator, and the key. The key is saved once and kept (typing it later, for a
+station already on the list, saves it too). Trains to a London terminus are the
+southbound (or inbound) column; the rest are the other. Cancelled trains are
+left out; a delayed one with no estimate stays and its row says "delayed" once
+its time has gone. If the key is missing or wrong the screen says so in those
+words; if the feed does not know the station code, likewise.
+
+## From a shell, when the page is out of reach
+
+The settings page only answers on the Pi's own network. When the board lives in
+someone else's house, a Raspberry Pi Connect shell does the same job:
+
+```bash
+cd /opt/tubeboard
+python3 portal.py --list-stations
+sudo python3 portal.py --add-station "Highbury & Islington" --line victoria
+sudo python3 portal.py --rail-key YOURKEY
+sudo python3 portal.py --add-rail DYP --line great-northern
+sudo python3 portal.py --drop-station 2
+sudo python3 portal.py --rotate 30
+```
+
+Run it in `/opt/tubeboard`, not in the git clone: the live settings are there.
+The `sudo` is because the installer and the service write `settings.json` as
+root; listing needs none. Each command edits the file and exits, and the board
+picks the change up within a refresh, no restart. Line ids are the ones in the
+URL on TfL's own site: `piccadilly`, `victoria`, `mildmay`, `windrush`,
+`elizabeth`, `dlr`, and for National Rail `great-northern`, `thameslink`,
+`southern` and so on. The Overground is six named lines, not one.
+
+## WiFi
+
+With no known WiFi the Pi starts its own hotspot, **TubeBoard-setup**, and
+after a minute the screen says so: JOIN WIFI, the name large, a QR code a phone
+camera reads as an offer to join, and the three steps. Join it, and a page
+appears to choose the home WiFi and type its password. While that join is
+happening the screen says WIFI OK and which network. Then the trains come up.
+(The minute's wait is because the Pi raises its hotspot briefly on every boot
+before joining the known WiFi; a power cut should not show setup instructions.)
+
+When the WiFi is there but the trains are not, the footer says which it is:
+**No internet** on that network, **WiFi needs sign-in** (a cafe or hotel page
+is in the way), or **Transport for London not answering** when the internet is
+fine and the feed is not.
+
+Before the board goes to someone else, **WiFi > Forget the WiFi** on the
+settings page (type FORGET) makes the Pi forget every network it knows, so the
+setup screen comes up at their house. From a shell: `sudo python3 portal.py
+--forget-wifi`. The board keeps drawing throughout.
 
 ## The screen's identity is pinned
 
@@ -61,35 +157,47 @@ for a different one, delete that file and run the installer again.
 ```bash
 bash bench.sh        # leave running an hour at the brightness you want
 ```
-Any line saying "under-voltage" means the single lead is not enough at that
+Any line saying "under-voltage" means the power is not enough at that
 brightness. Then: pull the plug, put it back, and the board must come back
 with no button pressed on the screen.
 
 ## Test the drawing anywhere
 
 ```bash
-python3 board.py --png out.png
+python3 board.py --png out.png                  # the first board, live data
+python3 board.py --png out.png --view 2         # the second board of the rotation
+python3 board.py --png out.png --setup          # the WiFi setup screen
+python3 rail.py DYP YOURKEY                     # what the rail feed says for a station
+python3 netdiag.py                              # the network verdict, on this machine
 ```
-Renders one frame with live data to a file. Works on a Mac.
+All work on a Mac. In the clone `settings.json` holds one board, so `--view 2`
+there draws board 1 and says so; the rotation lives in `/opt/tubeboard`.
+
+```bash
+python3 test_rotation.py
+```
+159 checks with every feed and command stubbed, so it runs with no network at
+all. Run it before deploying a change to how the boards are picked or drawn.
 
 ## A direction is missing from the screen
 
 ```bash
-python3 board.py --explain
+cd /opt/tubeboard && python3 board.py --explain
 ```
 
-Prints what TfL answers for the configured station — how many predictions, on
-which platforms, with which direction — and then the columns the board makes of
-them. That separates the two causes, which have different fixes:
+Prints, for every board on the rotation in turn, what the feed answered for the
+station (how many predictions, on which platforms, with which direction) and
+then the columns the board makes of them. That separates the two causes, which
+have different fixes:
 
-- **TfL sent trains one way only.** Read the status line first: during a closure or a
-  suspension there really are no trains the other way, and the board is right to show
-  that column empty. At a terminus it is the truth too. Otherwise suspect the station
-  id — a station that is one name on the map can be two stop points at TfL, and only
-  one of them carries both directions. Search the station again in the portal and pick
-  the other result.
-- **TfL sent both ways and the board drew one column.** That is a bug here. Keep the
-  output — it holds the platform names and directions needed to fix it.
+- **The feed sent trains one way only.** Read the status line first: during a
+  closure or a suspension there really are no trains the other way, and the board
+  is right to show that column empty. At a terminus it is the truth too. Otherwise
+  suspect the station id: a station that is one name on the map can be two stop
+  points at TfL, and only one of them carries both directions. Search the station
+  again in the portal and pick the other result.
+- **The feed sent both ways and the board drew one column.** That is a bug here.
+  Keep the output: it holds the platform names and directions needed to fix it.
 
 A direction with no trains keeps its column and says "No trains reported" under it,
 rather than letting the other direction go full width: an empty column is a fact

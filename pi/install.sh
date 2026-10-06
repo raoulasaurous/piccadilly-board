@@ -10,7 +10,9 @@ apt-get update
 # with a screen attached:  SKIP_COMITUP=1 bash install.sh
 # ddcutil drives the monitor's brightness over the HDMI cable, which is the
 # only way to change it once the screen is sealed in the frame.
-PKGS="python3-pil python3-requests python3-numpy fonts-dejavu-core ddcutil"
+# python3-qrcode draws the setup screen's QR code; without it the screen says the
+# hotspot's name in words and nothing else is lost.
+PKGS="python3-pil python3-requests python3-numpy python3-qrcode fonts-dejavu-core ddcutil"
 [ -n "$SKIP_COMITUP" ] || PKGS="$PKGS comitup"
 apt-get install -y $PKGS
 
@@ -19,7 +21,7 @@ NEED_REBOOT=no
 [ -f /etc/systemd/system/tubeboard.service ] || NEED_REBOOT=yes
 
 install -d /opt/tubeboard
-cp board.py portal.py screen.py /opt/tubeboard/
+cp board.py portal.py screen.py rail.py netdiag.py /opt/tubeboard/
 [ -f /opt/tubeboard/settings.json ] || cp settings.json /opt/tubeboard/
 cp tubeboard.service tubeboard-portal.service /etc/systemd/system/
 
@@ -55,7 +57,6 @@ if head -n 1 "$CMD" | grep -q -- 'console=tty1'; then
 elif ! head -n 1 "$CMD" | grep -q -- 'console=tty[0-9]'; then
   sed -i "1s/\$/ console=tty3/" "$CMD"
 fi
-[ "$(cat "$CMD")" = "$CMD_WAS" ] || NEED_REBOOT=yes
 
 # Pin the screen's own EDID. Without this, cutting power to the MONITOR (a
 # blip, or someone switching the wall socket) makes the Pi re-ask the screen who
@@ -85,6 +86,12 @@ else
   echo "         run this installer again with the screen on, or a monitor"
   echo "         power cut will leave the board zoomed in."
 fi
+
+# Compare only now, after the EDID line is in, and compare the set of tokens, not
+# the line: every edit above strips its token and appends it at the end, so the
+# order changes on a re-run while the kernel sees the same options.
+tokens() { tr ' ' '\n' <<< "$1" | sort; }
+[ "$(tokens "$(cat "$CMD")")" = "$(tokens "$CMD_WAS")" ] || NEED_REBOOT=yes
 
 CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
 grep -q '^hdmi_force_hotplug' "$CFG" || {

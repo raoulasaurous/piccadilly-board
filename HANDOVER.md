@@ -1,350 +1,409 @@
 # Handover - the Tube Board
 
-Written 19 Sept 2026 for whoever picks this up next, human or model. It merges
-two handovers: the cloud session that fixed the westbound report today, and the
-Mac session that built and bench-tested the hardware from 9 to 17 Sept. It
-covers the whole project. Most of it exists nowhere else in the repo.
+Written 19 Sept 2026, rewritten in the small hours of 7 Oct 2026 by a cloud
+session that could not reach the Pi, TfL or National Rail, for whoever picks
+this up next, human or model. It covers the whole project. Most of it exists
+nowhere else in the repo.
 
 **This repo is PUBLIC** (GitHub Pages serves `index.html`). Keep WiFi names,
 passwords, addresses and personal details out of it, including out of this file.
 
 **Sister project:** `raoulasaurous/esp32-matrix-ticker` has its own
-`HANDOVER.md`. The two were worked on in the same sessions and share nothing
-else, not even the branch name they both carry.
+`docs/HANDOVER.md`. Its WiFi setup is the model this board's now follows; the
+two share nothing else.
 
 ## What this is
 
-A live Piccadilly line departure board for Arsenal, built by Raoul as a gift for
-a friend (called "the recipient" here). A Raspberry Pi 3 A+ draws the board
-straight to a 15.6" 1080p monitor: no desktop, no browser. It will hang on a
-wall in a deep box frame with a card mount and no glass. The web version
-(`index.html`) came first. The Pi board copies its layout.
+A live departure board for a Raspberry Pi 3 A+ driving a 15.6" 1080p monitor:
+no desktop, no browser. Built by Raoul as a gift for a friend (called "the
+recipient" here). The web version (`index.html`) came first; the Pi board copies
+its layout. It shows one station or cycles through several, from TfL's feed
+(tube, DLR, Elizabeth line, Overground) and from National Rail's (everything
+else). It will hang on a wall in a deep box frame with a card mount and no glass.
 
-## State on 19 Sept 2026
+## State on 7 Oct 2026
 
 | Area | State |
 |---|---|
-| `main` | `1a54c1c`. PRs #1, #2 and #3 are all merged. No open PRs. |
-| The westbound fix | Merged. **Not deployed to the Pi.** |
-| Where the Pi is | At a relative's house (per the 19 Sept cloud session), online and showing live trains |
-| Power | **Settled 17 Sept. Do not re-test.** One brick, two cables. |
+| `main` | Carries PRs #1-#4. #4 is the night of 6-7 Oct: the rotation, National Rail, the WiFi screen, two review passes. |
+| **What the Pi runs** | **The code from before PR #1.** Nothing merged since 19 Sept has been deployed: not the westbound fix, not the rotation, nothing from tonight. |
+| The Pi itself | **Unplugged by Raoul on the evening of 6 Oct.** Whether `shutdown -h` ran first is not recorded. A brownout corrupted the card once before; if the board does not come up, suspect the card first. Where it is plugged in next is Raoul's call. |
+| What the recipient wants on it | Highbury & Islington (Victoria line), Drayton Park (Great Northern), and Arsenal as it is. Rotation 30 s. |
+| National Rail key | **Not yet obtained.** Raoul registers at raildata.org.uk (below). Without it the Drayton Park board says so on the screen and shows nothing else. |
+| Tested | 159 offline checks (`pi/test_rotation.py`) and 18 in headless Chrome (`test_index.py`) pass. Two review passes, 62 findings reproduced and fixed. **Nothing from tonight has run on the Pi, and the rail client has never called the real feed.** |
+| Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Raspberry Pi Connect, signed in 14 Sept, still signed in on 17 Sept, survives reboots |
-| WiFi hand-over flow | Proven 14 Sept, but under the wrong hotspot name (see "Before it goes") |
+| WiFi hand-over flow | Proven 14 Sept under the wrong hotspot name; the fix (`b6afc71`) and tonight's setup screen are both unseen on a phone |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed |
-| Frame and mount | **Blocked on three ruler measurements from Raoul** |
+| Frame and mount | **Blocked on three ruler measurements from Raoul** (unchanged) |
 
-The branch `claude/tube-board-westbound-missing-phq184` is fully merged. Work
-from `main`.
+## Start here, on the Mac
+
+```bash
+cd ~/Downloads/piccadilly-board && git checkout main && git pull
+cd pi && python3 test_rotation.py            # 159 checks, no network needed
+python3 board.py --png /tmp/b.png            # live TfL: the Mac can reach it, this session could not
+python3 board.py --png /tmp/s.png --setup    # the WiFi setup screen
+cd .. && python3 test_index.py               # the web version, in headless Chrome (18 checks)
+```
+
+Then, in this order:
+
+1. **Get the rail key.** Account at raildata.org.uk, subscribe to the public
+   **Live Departure Board** product, copy the consumer key. Then the first live
+   call the rail client has ever made: `python3 rail.py DYP THEKEY`. It prints the
+   feed's own account of Drayton Park and what the board makes of it. If the URL
+   is refused, the product path has moved: see "National Rail boards" below.
+2. **Deploy** (next section). The Pi must be plugged in and online.
+3. **Add the stations** over the same shell (in the deploy section).
+4. Ask for a photo of the screen. Nobody has seen any of this on the real one.
 
 ## Deploying: merging is not deploying
 
 There is no self-update. The board runs from `/opt/tubeboard/`, which
-`install.sh` copies into. It does not run from the git clone. For a change to
-`board.py` only:
+`install.sh` copies into. It does not run from the git clone. Tonight's change
+touched every program, so it is the installer run, not a one-file copy.
+
+**Nobody needs to be in the house.** Raoul opens connect.raspberrypi.com, picks
+`tubeboard`, opens the remote shell and pastes. This works while the Pi is
+online and Connect is signed in (it was on 17 Sept). The SSH key only works on
+the same network as the Pi.
 
 ```bash
-cd ~/piccadilly-board && git pull
-sudo cp pi/board.py /opt/tubeboard/ && sudo systemctl restart tubeboard
+sudo cp -a /opt/tubeboard "/opt/tubeboard.bak-$(date +%F)"   # the way back; a dated name never nests
+cd ~/piccadilly-board && git status --short && git pull      # status should print nothing first
+cd pi && sudo SKIP_COMITUP=1 bash install.sh
 ```
 
-`settings.json` is not touched, so the station and brightness survive. The board
-redraws within about 30 seconds. For a change to the installer, the portal or
-`screen.py`, run `cd ~/piccadilly-board/pi && sudo SKIP_COMITUP=1 bash install.sh`
-instead. It copies all three files and restarts both services.
+The installer copies `board.py portal.py screen.py rail.py netdiag.py`, installs
+`python3-qrcode`, keeps `settings.json`, and restarts both services. It no longer
+asks for a reboot on every re-run (that was a bug). Then:
 
-**Nobody needs to be in the house.** Raspberry Pi Connect gives a shell from
-anywhere: Raoul opens connect.raspberrypi.com, picks `tubeboard`, opens the
-remote shell and pastes the commands. This works while the Pi is online and
-Connect is still signed in (it was on 17 Sept). The SSH key only works on the
-same network as the Pi.
+```bash
+cd /opt/tubeboard
+sudo python3 portal.py --add-station "Highbury & Islington" --line victoria
+sudo python3 portal.py --rail-key THEKEY
+sudo python3 portal.py --add-rail DYP --line great-northern
+python3 portal.py --list-stations
+python3 board.py --explain
+```
+
+`--explain` prints every board in turn: what the feed answered and the columns
+made of it. Both columns on each is the check. **Run it in `/opt/tubeboard`**,
+not in the clone: the live settings are there. That trap cost an hour once.
+
+What the screen does on every boot from now on: "Starting up" for the first
+minute; if comitup is still on its hotspot after that, the setup screen; the
+board as soon as a fetch lands. A power cut in the recipient's house therefore
+shows the board, not setup instructions, unless the WiFi really is gone.
+
+The `sudo` on the writing commands is because the installer and the service
+write `settings.json` as root. Without it the command ends in one line saying
+so. Optional extra boards: `--add-station "Highbury & Islington" --line mildmay`
+(the Overground there, both ways) and `--line windrush`.
+
+**Rollback:**
+```bash
+sudo cp /opt/tubeboard.bak-<date>/*.py /opt/tubeboard/ && sudo systemctl restart tubeboard tubeboard-portal
+```
+The old `board.py` ignores the new keys in `settings.json` and shows the first
+TfL board on the rotation, so the settings can stay. The backup has no `rail.py`
+or `netdiag.py`; leave the new ones in place, the old programs never import them.
+
+**Shut down before pulling power:** `sudo shutdown -h now`.
+
+## The rotation
+
+`settings.json` has a `stations` list of `{source, line, station_id,
+station_name}` and a `rotate_seconds` (default 30). An empty list means one
+board, built from the top-level `line` and `station_id`, which is every install
+made before this. The portal keeps those top-level keys pointing at the first
+TfL board on the rotation, so an older `board.py` still shows a real station.
+
+`station_views()` turns the settings into one flat settings dict per board, so
+`fetch()` and `render()` never learned there is more than one. Each board keeps
+its own data, last-updated time and failure count, keyed by source, line and
+stop. The loop draws before it fetches, so a switch never waits on the network.
+Only the board on screen is fetched, on its own 30 s clock. A row of dots under
+the clock says which board is up and how many there are. Eight is the most.
+
+"No live data" is three minutes since the board's last good fetch, whatever the
+rotation; a failed fetch is redrawn at once.
+
+Editing the list: the settings page (**Boards on the screen**) on the Pi's own
+network, or the shell commands above from anywhere. Remove works by the board's
+identity, not its position.
+
+## National Rail boards
+
+TfL's unified API carries arrivals for the tube, DLR, Elizabeth line and
+Overground only. Drayton Park is Great Northern, a National Rail station on the
+Northern City Line. Its departures come from National Rail's Live Departure
+Board service through the Rail Data Marketplace:
+
+- `rail.py`: `fetch()` calls `GetDepartureBoard/{CRS}` with the key in an
+  `x-apikey` header; `predictions()` turns the board into TfL-shaped arrivals.
+  Inbound is a train to a London terminus (`LONDON_TERMINI`); the platform name
+  carries the line's compass word (`LINES[...]["inbound"]`, Southbound for Great
+  Northern) so the two columns read as TfL's do. Cancelled trains are left out.
+  A train the feed calls "Delayed" with no estimate stays, and once its timetable
+  time has gone its row says `delayed` instead of minutes. A train that left more
+  than two minutes ago is dropped. Minutes are measured against the feed's own
+  clock (`generatedAt`), because the Pi's is wrong for a moment after every power
+  cut until NTP steps it. Two services expected the same minute are two rows.
+- No key, a refused key, or a stop the feed does not know is said on the screen
+  in those words ("Rail key needed", "...does not know this stop"), never as
+  "not answering": those are this board's problems, and the WiFi is not asked.
+- Thameslink is not in the operator table: it runs through London, so "a train
+  to a London terminus is inbound" cannot name its directions.
+- A station entry is `{"source": "national-rail", "line": "great-northern",
+  "station_id": "DYP", "station_name": "Drayton Park"}`. The status line stays
+  TfL's: it publishes one for the operators under the same line ids.
+- The key is `rail_api_key` in `settings.json`; `rail_api_url` overrides the
+  base URL if the product path moves (it has moved once before). The default is
+  `https://api1.raildata.org.uk/1010-live-departure-board-dep/LDBWS/api/20220120`.
+- The roundel bar says NATIONAL RAIL. It is TfL's mark with the wrong words on
+  it, chosen so the header stays one shape; Raoul may want the double arrow.
+
+**Written blind.** The feed's JSON field names are taken from the SOAP-era
+schema, which the REST version mirrors, and `_get()` accepts both camelCase and
+PascalCase. The `via` field is assumed to carry the word ("via Hertford North"),
+as Darwin's reference data does; the code strips it, and is a no-op if the feed
+sends the bare place. If the first live call shows different names, `rail.py`
+is the one file to fix, and `test_rotation.py`'s `RAIL_BOARD` is the shape to
+correct.
+
+## The WiFi screen and the diagnosis
+
+The ticker's lesson: the device knew exactly which failure it had and wrote it
+to a port nobody could see, while the panel said "...". This screen can say it.
+
+- **HOTSPOT** (comitup has no network to join, for more than a minute after the
+  board started): `render_setup()` draws JOIN WIFI, the hotspot's name large, a
+  QR code (`WIFI:T:nopass;S:<name>;;`, or the WPA form if `ap_password` is set;
+  dark on light because phone cameras read inverted codes badly) and three steps
+  naming `http://10.41.0.1`. Name and password come from `/etc/comitup.conf`.
+- **CONNECTING**: WIFI OK and the network's name.
+- **CONNECTED but no trains**: a normal board with one footer line. If the feed
+  answered with a refusal (no key, key refused, 404 for the stop, 429) the line
+  is that, in the fetch's words. Otherwise `netdiag.verdict()`: No internet on X /
+  WiFi needs sign-in / Transport for London (or National Rail) not answering. The
+  network checks (`comitup-cli i`, which prints `HOTSPOT state`; `ip`; `nmcli`;
+  DNS; a plain-http `generate_204` probe) run only after such a failure and at
+  most every 30 s. A good fetch clears everything. The journal gets a `network:`
+  line when the verdict changes, and one `fetch failed` line per distinct error,
+  not one per pass.
+- For the first three minutes after a boot the footer's right corner shows the
+  board's own address instead of the update age.
+- **Forget the WiFi**: on the page (type FORGET) or `sudo python3 portal.py
+  --forget-wifi`. Deletes every saved network that is not an access point:
+  comitup's own hotspot connection is named `<ap_name>-0000`, not the ssid, and
+  comitup only remakes it at service start, so it is told apart by asking
+  NetworkManager its mode, never by its name. comitup raises the hotspot within a
+  minute; the board keeps drawing. This is hand-over step 1 below, which used to
+  be done by hand with nmcli. Over Pi Connect it cuts your own connection, by design.
+
+**Unverified on hardware:** that iOS joins an open network from a `WIFI:` QR;
+that `connectivitycheck.gstatic.com/generate_204` is reachable from the house;
+that `python3-qrcode` installs under that name on trixie (without it the screen
+says the name in words); that nmcli's terse output escapes a colon in a name
+as `\:` (handled, from the man page). First boot on the real Pi settles them.
+comitup's one-shot output and its connection naming were checked against its
+source (`davesteele/comitup`, 1.30 to 1.47.1).
 
 ## Where things live
 
-- `pi/` - the Pi board: `board.py` (TfL fetch + Pillow render to `/dev/fb0`),
-  `portal.py` (settings page, port 8080), `screen.py` (brightness over DDC/CI),
-  `install.sh`, `bench.sh` (decodes `vcgencmd get_throttled`), systemd units.
-  `pi/README.md` is the user-facing guide.
+- `pi/` - the Pi: `board.py`, `portal.py`, `rail.py`, `netdiag.py`, `screen.py`,
+  `install.sh`, `bench.sh`, `test_rotation.py`, the systemd units. `pi/README.md`
+  is the user-facing guide and matches the code as of tonight.
 - `index.html` - the web version, live at raoulasaurous.github.io/piccadilly-board.
+  One station, TfL only. As of tonight it carries the Pi board's column logic
+  (headings from the trains, an empty direction kept, the worst status with its
+  cause, "no live data" with an age) and `test_index.py` at the root drives it
+  in headless Chrome.
 - `case/sled.py` - the Pi mounting sled (manifold3d). `cd case && python3 sled.py`
-  rebuilds `sled.stl`, `clamp.stl` and `pi_dummy.stl` in that folder.
-- Artifacts, private to Raoul's claude.ai account. Update in place by passing `url=`:
-  - Parts page for the recipient:
-    https://claude.ai/code/artifact/b780921a-e621-4f93-a29b-1e38fc4c2e7c.
-    **Out of date.** Last published 9 Sept, before the parts arrived. Its power
-    section still shows the one-lead splitter plan, which failed.
-  - Sled CAD viewer: https://claude.ai/artifact/RmcsgJq7pK1BVMFQAx7zWr. Its
-    source is `case/viewer.html` on Raoul's Mac (not in git), built with
-    `~/.claude/tools/cad_viewport.py`.
-- On Raoul's Mac only (gitignored): `backup/pi-config-backup.tgz`, a tar of the
-  Pi's config from 14 Sept (the pinned EDID and the sudo rule).
+  rebuilds the three STLs.
+- Artifacts, private to Raoul's claude.ai account (update in place with `url=`):
+  the parts page https://claude.ai/code/artifact/b780921a-e621-4f93-a29b-1e38fc4c2e7c
+  (**out of date**: its power section shows the one-lead plan that failed) and the
+  sled viewer https://claude.ai/artifact/RmcsgJq7pK1BVMFQAx7zWr (source
+  `case/viewer.html` on Raoul's Mac, not in git).
+- On Raoul's Mac only (gitignored): `backup/pi-config-backup.tgz`, the Pi's
+  config from 14 Sept (the pinned EDID and the sudo rule).
 
 ## The Pi
 
-- Raspberry Pi OS Lite 64-bit (Debian 13 trixie). Hostname `tubeboard`, user
-  `locklinestudio`.
+- Raspberry Pi OS Lite 64-bit (Debian 13 trixie, Python 3.13). Hostname
+  `tubeboard`, user `locklinestudio`, passwordless sudo in
+  `/etc/sudoers.d/020-tubeboard` (added by hand; Imager does not do it).
 - SSH is key-only, from Raoul's Mac (`~/.ssh/id_ed25519`, comment
-  `tubeboard@Raouls-Laptop`): `ssh locklinestudio@tubeboard.local`. The Deco
-  mesh router at Raoul's sometimes drops `.local` names. Then find the IP with
-  `arp -a` or in the router's app.
-- Passwordless sudo is in `/etc/sudoers.d/020-tubeboard`. Raoul added it by
-  hand, because Imager does not do it for a custom user.
-- A console password exists. Raoul typed it into a chat once, so treat it as
-  exposed. Never ask for it, and never write it anywhere. Resetting it is a
-  required step before the board is handed over.
-- Code: a clone at `~/piccadilly-board` on `main`. `install.sh` copies
-  `board.py portal.py screen.py` to `/opt/tubeboard/` and never overwrites an
-  existing `/opt/tubeboard/settings.json`.
-- Services: `tubeboard.service` (the board), `tubeboard-portal.service`
-  (settings page, http://tubeboard.local:8080), and comitup (WiFi hotspot and
-  its own page on port 80).
-- See the real screen without asking Raoul: `ssh locklinestudio@tubeboard.local
-  'sudo cat /dev/fb0 | gzip' > fb.gz`, then decode it with numpy as RGB565,
-  little endian, 1920x1080, stride 3840.
-- Health check: `vcgencmd get_throttled` (must be `0x0`), count "draw failed"
-  and "fetch failed" in `journalctl -u tubeboard.service -b`,
-  `cat /sys/class/graphics/fb0/virtual_size` (must be `1920,1080`),
-  `sudo ddcutil --brief getvcp 10` (brightness).
-- **Shut down before pulling power:** `sudo shutdown -h now`. A brownout
-  already corrupted the SD card once, and it had to be re-imaged.
+  `tubeboard@Raouls-Laptop`): `ssh locklinestudio@tubeboard.local`. The Deco mesh
+  sometimes drops `.local` names; then `arp -a` or the router's app.
+- A console password exists and was once typed into a chat, so treat it as
+  exposed. Never ask for it, never write it down. Resetting it is a required step
+  before the hand-over.
+- Code: a clone at `~/piccadilly-board` on `main`. Services: `tubeboard.service`,
+  `tubeboard-portal.service` (port 8080), comitup (hotspot and its page on 80).
+- See the real screen from the same network: `ssh locklinestudio@tubeboard.local
+  'sudo cat /dev/fb0 | gzip' > fb.gz`, decode as RGB565 little-endian 1920x1080,
+  stride 3840. From anywhere: ask for a phone photo.
+- Health: `vcgencmd get_throttled` must be `0x0`; count `draw failed` and `fetch
+  failed` in `journalctl -u tubeboard.service -b`; `cat
+  /sys/class/graphics/fb0/virtual_size` must be `1920,1080`; `sudo ddcutil --brief
+  getvcp 10` is the brightness. New tonight: `network:` lines in the journal say
+  what the WiFi was doing each time a fetch failed.
 
 ## Hardware facts that cost time to learn
 
 Do not re-learn these.
 
-1. **A Pi 3 gives a 16-bit framebuffer and nothing else.** The vc4 driver
-   decides. `framebuffer_depth` and a `-32` on the `video=` line are both
-   ignored. Pillow has no 16-bit packer, so `board.py` packs RGB565 with numpy.
-   That is the normal path on this hardware, not a fallback.
-2. **`video=HDMI-A-1:1920x1080MR@60D`: the `MR` matters.** Without it the
-   kernel builds GTF timings from the `video=` line at 172.8 MHz. That is above
-   the Pi 3's 162 MHz HDMI limit, so the mode falls back to 1024x768. `MR`
-   (reduced blanking) fits.
-3. **The screen's EDID is pinned:** `drm.edid_firmware=HDMI-A-1:edid/tubeboard.bin`.
-   Without it, a power cut to the monitor alone drops the mode to 1024x768
-   until a reboot: the board is drawn full size but shown zoomed into its
-   top-left corner. **Run `install.sh` with the screen plugged in and on**, or
-   there is no EDID to capture. (Fixed installer bug: sysfs reports the EDID
-   file as 0 bytes, so the installer copies it first and then checks the copy.)
-4. **Power is settled.** What works (17 Sept): one UGREEN Nexode 35 W brick
-   with USB-C and USB-A. USB-C goes to the monitor on the monitor's own lead.
-   USB-A goes to the Pi on a MaGeek 3 m micro-USB lead. A 20-minute soak at 100%
-   brightness gave 397 samples, 0 under-voltage, 0 throttled,
-   `throttled=0x0` sticky, 0 draw failures and a 40 C peak.
-   What failed, and why:
-   - One cable and a splitter that fed both devices: about 2 A over 2 m, and
-     about 1 V lost. The Pi reported under-voltage (`0x50005`). The monitor's
-     backlight browned out too, and the screen blinked. Lower brightness helped
-     but did not fix it. Software cannot fix it.
-   - **The Pi fed from the monitor's second USB-C port.** That port is a
-     trickle output. The Pi went into a brownout loop and corrupted the SD
-     card. Never do this again. Never power the monitor from the Pi's USB port
-     either.
-5. A faint hiss from the Pi is coil whine from its voltage regulator. The pitch
-   follows the CPU clock. It is harmless. If it is audible in the frame, put a
-   dab of hot glue on the inductor.
-6. The board logs one "fetch failed: name resolution" per boot, because the
-   service starts before DNS is up. It recovers in 30 s. This is expected.
-7. comitup owns port 80, so the settings page is on 8080. apt starts comitup
-   with the stock name ("comitup-NNN") until it is restarted. A full
-   `install.sh` run restarts it. A run with `SKIP_COMITUP=1` does not touch it.
-8. Pi Connect is a **user** service. It needs `loginctl enable-linger
-   locklinestudio`, or it stops when the SSH session ends. `rpi-connect signin`
-   must keep running while the browser link completes: start it with
-   `setsid nohup`, never under `timeout`.
-9. Pi OS Lite has no git. Install it with apt before you clone.
+1. **A Pi 3 gives a 16-bit framebuffer and nothing else.** `board.py` packs RGB565
+   with numpy. That is the normal path, not a fallback.
+2. **`video=HDMI-A-1:1920x1080MR@60D`: the `MR` matters.** Without it the mode
+   falls back to 1024x768.
+3. **The screen's EDID is pinned** (`drm.edid_firmware=HDMI-A-1:edid/tubeboard.bin`),
+   or a power cut to the monitor alone zooms the board into its top-left corner
+   until a reboot. **Run `install.sh` with the screen plugged in and on.**
+4. **Power is settled.** UGREEN Nexode 35 W brick: USB-C to the monitor on its own
+   lead, USB-A to the Pi on a MaGeek 3 m micro-USB lead. 20-minute soak at 100%:
+   0 under-voltage, 0 throttled, 40 C peak. The one-lead splitter failed (1 V
+   lost over 2 m). **Never feed the Pi from the monitor's second USB-C port**: it
+   browned out and corrupted the card.
+5. A faint hiss from the Pi is coil whine. Harmless; a dab of hot glue if audible.
+6. The board logs one `fetch failed (...)` about name resolution per boot, because
+   the service starts before DNS is up. It recovers in 30 s. Expected.
+7. comitup owns port 80, so the settings page is on 8080. A full `install.sh` run
+   restarts comitup so the hotspot carries the name we set; `SKIP_COMITUP=1` does not.
+8. Pi Connect is a **user** service: `loginctl enable-linger locklinestudio`, and
+   `rpi-connect signin` under `setsid nohup`, never `timeout`.
+9. Pi OS Lite has no git. `apt install git` before cloning.
 
-## The westbound report (19 Sept), and what it was
+## The westbound report (19 Sept), in short
 
-*"It's showing on the screen but only eastbound, no westbound."* Arsenal,
-Piccadilly line.
-
-**The board was right.** There was a weekend part closure and TfL reported no
-westbound trains at all. But the board had no way to say so:
-
-- One direction reported meant one group, and one group was drawn full width.
-  The westbound column simply disappeared.
-- The status line held the explanation but spent its width on dates, and the
-  clip landed before the part that named what was shut.
-
-PR #2 fixed both. An empty direction now keeps its column and says
-`No trains reported`, when the missing side can be named from the running one
-(the compass pairs, and the Circle line's two rails). The status line starts at
-the clause that names the closure.
-
-PR #1 fixed two real bugs found on the way. Neither caused the Arsenal report,
-but both could drop a direction:
-
-- **`dedupe` was direction-blind.** It matched on destination and time only,
-  so two trains going opposite ways merged when they shared a destination
-  within five seconds (the Circle line does this all day). It now refuses to
-  merge predictions that state different directions or headings. A blank on
-  either side contradicts nothing, so the DLR duplicates it was written for
-  still merge.
-- **The regroup fallback was all-or-nothing.** One train without a compass
-  platform name threw away the whole east/west split. Such a train is now placed
-  with trains to the same destination or in the same direction. If neither
-  places it, the split is still refused, because a train under the wrong
-  heading sends someone to the wrong platform.
-
-**Verified on a Mac on 19 Sept at 21:39 BST, against live TfL during the real
-closure.** `--explain` showed 5 eastbound predictions and 0 westbound. A full
-render kept the WESTBOUND column with "No trains reported", and the status read
-"Part Closure - no service between Hyde Park Corner and Acton Town....". The
-cloud session could not reach TfL (blocked in its sandbox) and tested with
-stubbed payloads only. **Nobody has seen the fix on the real screen.**
-
-### The diagnostic
-
-```bash
-cd /opt/tubeboard && python3 board.py --explain
-```
-
-It prints what TfL answered for the configured station (how many predictions,
-on which platforms, with which direction), then the columns the board made of
-them. It is safe to run while the service is going. **Run it in
-`/opt/tubeboard`**, not in the git clone: the live `settings.json` is there,
-and the clone holds only the repo default. That trap cost an hour.
-
-A lesson from the repro: match the whole feed, not the visible rows. The real
-Arsenal feed carried a third destination beyond the five rows drawn, and that
-is what changed the grouping.
+*"Only eastbound, no westbound."* The board was right: a weekend part closure.
+What was wrong was that a correct board looked broken. PR #2 keeps an empty
+direction's column and says `No trains reported`; the status line starts at the
+clause naming the closure. PR #1 fixed two real bugs found on the way: a
+direction-blind `dedupe` (the Circle line ate itself) and an all-or-nothing
+regroup fallback. Verified against live TfL on a Mac during the real closure.
+Still never seen on the real screen. `board.py --explain` is the diagnostic.
 
 ## Still to do
 
 In rough order:
 
-1. **Deploy `main` to the Pi** (see "Deploying"), then screenshot the real
-   screen to confirm.
-2. **A self-updater.** Offered three times, never built. A systemd timer that
-   pulls `main` and restarts the board would make merging equal deploying. One
-   manual install bootstraps it. The ticker already works this way.
-3. **`index.html` has the bug the Pi board just had.** The web version still
-   filters strictly on direction (`index.html:357`,
-   `.filter((a) => a.direction === c.api)`). TfL omits `direction` at termini
-   and leaves it empty across much of the DLR, the Elizabeth line and the
-   Overground, so at such stations the page shows two empty columns while trains
-   are due. `pi/board.py` has the full fallback (heading, then towards, then
-   destination). The page has none of it.
-4. **A long destination overruns the minutes column.** "Hainault via Newbury
-   Park" collides with "7 min". The destination is drawn without `clip()`.
-5. `clip()` adds "..." after text that already ends in a full stop, which gives
-   four dots (visible in the status line quoted above).
-6. `pi/__pycache__/*.pyc` are tracked in git by mistake. Remove them and add
-   them to `.gitignore`.
-7. The physical build (below), which waits on Raoul's measurements.
+1. **Deploy** (above), then the stations, then a photo.
+2. **A self-updater.** Offered four times, never built. A systemd timer that pulls
+   `main` and runs the installer would make merging equal deploying. Decide first
+   how it refuses a pull that lands broken code on a wall nobody can reach: a
+   health check after restart (both columns drawn within two minutes, else
+   restore the dated backup) is the minimum.
+3. **`index.html` cannot rotate**, and its line name, colour and roundel are
+   fixed to the Piccadilly in the markup. The direction bug it carried since
+   19 Sept is fixed as of tonight. A one-destination board (the DLR shape) leaves
+   its second column blank where the Pi goes full width.
+4. **The rail board's finer points, once the feed has been seen live:** a
+   cancelled train is dropped rather than shown struck through; the roundel says
+   NATIONAL RAIL; London termini are a hand-kept list in `rail.py`.
+5. The physical build (below), which waits on Raoul's measurements.
 
 ## Physical build
 
 **How it is held** (agreed with Raoul): no glass. The mount presses on the
-frame's lip. The monitor lies face down on the mount on foam tape. The
-EasyFrame 6 mm spacer ring and 5 mm foam bring the perimeter level with the
-monitor's thicker spine. The backing board sits behind the screen, held by six
-turn buttons. The Pi sits on the sled, screwed to the backing board. Cork
-bumpers hold the frame 5 mm off the wall, for air and for the cables.
+frame's lip. The monitor lies face down on the mount on foam tape. The EasyFrame
+6 mm spacer ring and 5 mm foam bring the perimeter level with the monitor's
+thicker spine. The backing board sits behind the screen, held by six turn
+buttons. The Pi sits on the sled, screwed to the backing board. Cork bumpers
+hold the frame 5 mm off the wall.
 
-**The sled** (`case/sled.py`) is a tray, not a box, because the depth forces it.
-It screws to the **backing board, never to the monitor** (5 mm of thin
-aluminium, nothing to fix into). It holds the Pi 5 mm above the backing board
-(3 mm standoffs on a 2 mm base), clamps both cables so a pull does not reach
-the sockets, has vent slots, and has a slot so the SD card comes out with the
-frame assembled. Footprint 73 x 64 mm, height 14.9 mm with the Pi and its GPIO
-header. Not printed yet.
+**The sled** (`case/sled.py`) is a tray, not a box. It screws to the **backing
+board, never to the monitor**. Footprint 73 x 64 mm, height 14.9 mm with the Pi
+and its GPIO header. Not printed yet.
 
-**The depth arithmetic** (from `sled.py`; the screen number is an estimate from
-a photo, not a measurement):
-
-- Behind the frame's lip: mount 1.5 + screen spine (assumed 11) + backing 3 =
-  15.5 mm. The Pi goes behind that.
-- With the sled: 15.5 + 14.9 = 30.4 mm.
-- With the Pi on 1 mm foam tape instead of the sled: 15.5 + 1 + 9.9 = 26.4 mm.
+**Depth** (the screen number is an estimate from a photo): mount 1.5 + spine
+(assumed 11) + backing 3 = 15.5 mm behind the lip; with the sled 30.4 mm; with
+the Pi on 1 mm foam tape instead 26.4 mm.
 
 ### Blocked on three measurements from Raoul
 
-1. **The screen's thickness at its thick socket edge** (the "spine"). Add 19.4
-   for the sled, or 15.4 for the Pi on tape, to get the stack.
-   - EasyFrame 20 mm Walnut Stain box frame, code 307453492, rebate 28 mm,
-     457 x 305, 6 mm spacer, GBP 55.61 with free delivery. Anything over 28 mm
-     stands proud of the frame's back. The 5 mm cork bumpers hide up to about
-     4 mm of that. With the 11 mm estimate, the sled stands 2.4 mm proud (fine)
-     and the tape option fits inside.
-   - EasyFrame 20 mm Brown Stain, code 364453492, rebate 40 mm, GBP 60.64.
-     Everything fits inside with room to spare.
-   - Do not use Mahogany 225496000 (18 mm, too shallow) or cheap 15 mm frames.
-2. **Connector reach.** With the leads plugged in, measure how far the plug
-   and cable bend reach past the monitor's edge. The channel inside the frame
-   is about 40 mm at the top and bottom and about 49 mm at the sides.
-   - Under 40 mm: buy nothing.
-   - 40 to 50 mm: UGREEN braided mini-HDMI to HDMI pigtail,
-     amazon.co.uk/dp/B09X1L94S8, GBP 9.30, 1,723 reviews.
-   - Over 50 mm: a right-angle mini-HDMI adapter. Only niche brands exist
-     (Duttek, about 80 reviews). It is a passive part, so the risk is low.
-   - The monitor end is **mini-HDMI (type C), not micro**. The Pi end is full size.
-   - The monitor's USB-C lead can have the same problem. The fix is a
-     right-angle USB-C 2-pack, amazon.co.uk/dp/B0CBTWJ1YS, GBP 6.59.
-3. **Palm test.** After an hour, hold a palm on the screen front for ten
-   seconds. Comfortable or not? This tells us whether heat in a sealed frame
-   is a problem.
+1. **The screen's thickness at its thick socket edge.** Add 19.4 for the sled, or
+   15.4 for the Pi on tape. Stack 28 or under: EasyFrame 20 mm Walnut Stain,
+   code 307453492 (a *Picture* Frame on the site, 28 mm rebate),
+   https://www.easyframe.co.uk/Item/307453492. 28 to 32: still walnut, the
+   bumpers hide it. Over 32: 20 mm Brown Stain Box Frame, code 364453492BOX,
+   40 mm rebate, https://www.easyframe.co.uk/Item/364453492BOX. Checked 6 Oct:
+   the 40 mm Walnut Box (27 mm rebate) and the 22 mm Walnut Foil Box (17 mm) are
+   both shallower, so brown is the deep option, not a deeper walnut. Prices
+   quoted 19 Sept for 457 x 305 with the 6 mm spacer: GBP 55.61 / 60.64.
+2. **Connector reach** past the monitor's edge with the leads in, cables lying
+   as they want. Under 40 mm: nothing. 40 to 50: mini-HDMI pigtail,
+   amazon.co.uk/dp/B09X1L94S8. Over 50: a right-angle mini-HDMI adapter. USB-C
+   long too: right-angle USB-C 2-pack, amazon.co.uk/dp/B0CBTWJ1YS. The monitor
+   end is **mini-HDMI (type C), not micro**.
+3. **Palm test.** After an hour at 100%, a palm on the screen front for ten
+   seconds. Comfortable or not.
 
-Then order the mount from Southbank Art (custom window mount): 457 x 305,
-opening **346 x 195**, and **untick the 3 mm overlap**. GBP 15.00 + 4.95 post.
+Then the mount from Southbank Art (custom window mount, 1.5 mm board,
+https://southbankart.co.uk/products/custom-window-mount): 457 x 305, opening
+**346 x 195**, **untick the 3 mm overlap**.
 
 ## Parts
 
-- **In use:** Yodoit 15.6" 1080p matte non-touch (B0BYJ79PHH), Raspberry Pi 3
-  A+ (B07KKBCXLY), KEXIN 32 GB microSD, UGREEN Nexode 35 W USB-C + USB-A
-  (B0CFFNTCRY), MaGeek 3 m white USB-A to micro-USB (B00WEVG57K), the HDMI lead
-  from the monitor's box.
+- **In use:** Yodoit 15.6" 1080p matte (B0BYJ79PHH), Pi 3 A+ (B07KKBCXLY),
+  KEXIN 32 GB microSD, UGREEN Nexode 35 W (B0CFFNTCRY), MaGeek 3 m USB-A to
+  micro-USB (B00WEVG57K), the HDMI lead from the monitor's box.
 - **Retired, do not reuse for power:** the kenable 12 W charger, the INIU 2 m
-  lead and the RIIEYOCA splitter from the failed one-lead setup.
-- **Still to buy:** the frame, the mount, and maybe the mini-HDMI pigtail (all
-  above). Optional: a white braided sleeve so the two cables read as one cord
-  (shinfly 13 mm x 3 m, amazon.co.uk/dp/B09PG6JYPW, GBP 6.45).
+  lead, the RIIEYOCA splitter.
+- **Still to buy:** the frame, the mount, maybe the pigtail. Optional white
+  braided sleeve, amazon.co.uk/dp/B09PG6JYPW.
 - Zero / Zero 2 W boards are sold out until 2027. A Pico or ESP32 cannot drive
   this monitor. Do not revisit the brain choice.
 
 ## Settings on the Pi
 
-Station Arsenal (`940GZZLUASL`), line `piccadilly`, 5 rows, TfL fetch every
-30 s, redraw every 10 s. Brightness 100% from 07:00, 30% from 21:00.
-Off-overnight exists but is off. `screen.py` fails safe: if ddcutil is missing
-or the monitor does not answer, the board carries on.
+Station Arsenal (`940GZZLUASL`), line `piccadilly`, 5 rows (clamped 1-8), fetch
+every 30 s, redraw every 10 s, rotation 30 s once there is more than one board.
+Brightness 100% from 07:00, 30% from 21:00. Off-overnight exists but is off.
+`screen.py` fails safe, and the board survives it not. New keys tonight:
+`source`, `stations`, `rotate_seconds`, `rail_api_key`, `rail_api_url`; an old
+file without them behaves as before. A hand edit that leaves a number where a
+list goes, a quoted number, or a trailing comma is survived by the board (it
+keeps the old settings and says so in the journal) and refused by the portal
+with a sentence, never silently overwritten.
 
 ## Before it goes to the recipient
 
-1. Delete every WiFi network the Pi knows that is not the recipient's:
-   `nmcli connection show`, then `sudo nmcli connection delete "<name>"` for
-   each. Otherwise the board carries those passwords, and it never raises the
-   setup hotspot.
+1. **Forget the WiFi** from the settings page or `sudo python3 portal.py
+   --forget-wifi`. Otherwise the board carries this house's password, and never
+   raises the setup hotspot at theirs.
 2. Reset the console password (required, see "The Pi").
-3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect).
-   Decide whether Raoul's SSH key stays. Claude recommended keeping both, for
-   remote fixes, and saying so.
-4. **Test the hotspot once more with a phone.** On 14 Sept the flow worked
-   end to end: the Pi raised a hotspot, a phone joined it and entered a WiFi
-   network, and the Pi rebooted onto it with the board drawing throughout. But
-   the hotspot was called `comitup-680`, because comitup was not restarted
-   after its name was set. The installer fix (`b6afc71`) came after that test,
-   so nobody has yet seen **TubeBoard-setup** on a phone.
-5. The recipient's first power-on should then be: the Pi finds no known WiFi,
-   raises **TubeBoard-setup**, the recipient joins it from a phone and enters
-   their own WiFi, and the Pi reboots onto it. Settings are then at
-   http://tubeboard.local:8080.
+3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect). Decide
+   whether Raoul's SSH key stays. Claude recommended keeping both, and saying so.
+4. **See the setup screen and the hotspot on a phone once.** On 14 Sept the
+   join flow worked end to end but under the stock name; nobody has yet seen
+   **TubeBoard-setup**, the QR, or the WIFI OK screen.
+5. Their first power-on is then: the setup screen, join from a phone, choose
+   their WiFi, WIFI OK, trains. Settings at http://tubeboard.local:8080, which
+   the footer says for the first three minutes.
 
 ## Decisions already made (do not re-open)
 
-- Font: DejaVu. Hammersmith One (closest free face to TfL's Johnston) was
-  tried and rejected, because it has one weight only.
-- The roundel bar says UNDERGROUND (DLR, OVERGROUND and ELIZABETH LINE for
-  those networks). It is drawn to TfL proportions, not TfL's artwork.
-- 5 rows per direction. The footer shows "Updated 12s ago", an age that visibly
-  grows when the feed dies, not a clock time.
-- The whole frame is drawn at 2x and reduced for smooth curves (305 ms per frame
-  on a Pi 3).
+- Font: DejaVu. Hammersmith One was tried and rejected: one weight only.
+- The roundel bar says the network: UNDERGROUND, DLR, OVERGROUND, ELIZABETH LINE,
+  and now NATIONAL RAIL. Drawn to TfL proportions, not TfL's artwork.
+- 5 rows per direction. The footer shows "Updated 12s ago", not a clock time.
+- The whole frame is drawn at 2x and reduced (305 ms per frame on a Pi 3).
+- Rotation 30 s (Raoul, 6 Oct). Dots under the clock, not a label.
+- The setup QR is dark on light. The portal is unauthenticated on the home
+  network ("local is fine", the same call as on the ticker); the one destructive
+  action, Forget the WiFi, asks for a typed word.
 - Power: see above. Settled.
 
 ## Working with Raoul
 
 - Give short, plain answers: the result, not the reasoning.
-- For anything Raoul will send to the recipient: plain words, no em-dashes,
-  and always the complete text, never a list of edits.
+- For anything Raoul will send to the recipient: plain words, no em-dashes, and
+  always the complete text, never a list of edits.
+- He reads this on his phone first thing. The state table and "Start here" are
+  for that.

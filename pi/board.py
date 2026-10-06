@@ -28,12 +28,33 @@ try:
 except Exception as e:                          # noqa: BLE001
     screen = None
     print("screen control unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import rail                                 # National Rail departures, for stations TfL does not carry
+except Exception as e:                          # noqa: BLE001
+    rail = None
+    print("National Rail boards unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import netdiag                              # why there are no trains, in words
+except Exception as e:                          # noqa: BLE001
+    netdiag = None
+    print("network diagnosis unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import qrcode                               # the setup screen's "scan to join"
+except Exception:                               # noqa: BLE001
+    qrcode = None
+
+HOTSPOT_IP = "10.41.0.1"                        # where comitup's own page answers
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
 TFL = "https://api.tfl.gov.uk"
 
 DEFAULTS = {
+    # Where the trains come from. "tfl" is the unified API, which carries the tube,
+    # the DLR, the Elizabeth line and the Overground. "national-rail" is the Live
+    # Departure Board feed, for everything else (Drayton Park is Great Northern),
+    # and then station_id is the station's three-letter CRS code.
+    "source": "tfl",
     "line": "piccadilly",
     "station_id": "940GZZLUASL",
     "station_name": "Arsenal",
@@ -43,7 +64,17 @@ DEFAULTS = {
     ],
     "rows": 5,
     "refresh_seconds": 30,
+    # More than one board. Each entry is {"line", "station_id", "station_name"} and
+    # the screen shows each in turn for rotate_seconds. An empty list means one
+    # board, built from the line and station_id above, which is what every install
+    # before the rotation had.
+    "stations": [],
+    "rotate_seconds": 30,
     "app_key": "",
+    # National Rail's feed needs a key: a free account at raildata.org.uk, subscribed
+    # to "Live Departure Board". The url is only for when the product path moves.
+    "rail_api_key": "",
+    "rail_api_url": "",
     # Screen brightness, driven over the HDMI cable. Once the monitor is in the
     # frame its own buttons are unreachable, so this is the only way to change it.
     "brightness": 100,
@@ -90,6 +121,14 @@ LINE_COLOURS = {
     "london-overground": (238, 124, 14),
 }
 
+if rail:
+    for _lid, _t in rail.LINES.items():
+        LINE_NAMES.setdefault(_lid, _t["name"])
+        LINE_COLOURS.setdefault(_lid, _t["colour"])
+        # not a TfL roundel's network, but the bar has to say something true and
+        # short, and "NATIONAL RAIL" is what the signs outside the station say
+        NETWORK.setdefault(_lid, "NATIONAL RAIL")
+
 BG = (6, 8, 12)
 WHITE = (255, 255, 255)
 DIM = (150, 156, 170)
@@ -117,8 +156,19 @@ class Settings:
         try:
             with open(SETTINGS_PATH) as f:
                 d = json.load(f)
+            if not isinstance(d, dict):
+                # a hand edit can leave a list or null here; json.load is happy with
+                # those and the merge below would not be, on a wall nobody can reach
+                raise ValueError("settings.json is not an object")
             merged = dict(DEFAULTS)
             merged.update({k: v for k, v in d.items() if v not in (None, "")})
+            # rows is read raw by fetch() and render(): a hand-edited "5" (quoted), 5.0
+            # or 0 is a TypeError in both or an empty board, and five failed draws is a
+            # restart loop. Coerce and clamp once, here, where every view inherits it.
+            try:
+                merged["rows"] = max(1, min(8, int(merged["rows"])))
+            except (TypeError, ValueError, OverflowError):
+                merged["rows"] = DEFAULTS["rows"]
             self.data = merged
             self.mtime = m
             return True
@@ -128,6 +178,54 @@ class Settings:
 
     def __getitem__(self, k):
         return self.data[k]
+
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
+
+def station_views(settings):
+    """The boards to show, in order, one flat settings dict each.
+
+    fetch() and render() both read the station out of a settings dict, so a rotation
+    is just a list of those dicts with the station keys swapped. Nothing downstream
+    needs to know whether there is one board or five. An empty "stations" list gives
+    a single view built from the top-level line and station_id, which is every
+    install made before this existed."""
+    views = []
+    stations = settings["stations"]
+    if not isinstance(stations, list):
+        # settings.json can be edited by hand, and this runs before the first frame:
+        # a number here would be a restart loop on a wall nobody can reach
+        print("settings: stations is not a list, showing one board:", stations,
+              file=sys.stderr, flush=True)
+        stations = []
+    for st in stations:
+        if not isinstance(st, dict):
+            continue
+        line = str(st.get("line") or "").strip()
+        stop = str(st.get("station_id") or "").strip()
+        if not line or not stop:
+            # silently skipping it would draw an empty board with nothing to explain it
+            print("settings: station with no line or id, skipped:", st,
+                  file=sys.stderr, flush=True)
+            continue
+        v = dict(settings.data)
+        v["source"] = str(st.get("source") or "tfl")
+        v["line"] = line
+        v["station_id"] = stop
+        v["station_name"] = str(st.get("station_name") or stop)
+        # Platform labels are per station: TfL names them differently at each, so a
+        # rotation cannot share one set of columns.
+        v["columns"] = st.get("columns") or [dict(c) for c in DEFAULTS["columns"]]
+        views.append(v)
+    if not views:
+        views.append(dict(settings.data))
+    return views
+
+
+def view_key(v):
+    """What makes two boards the same board, for the per-board data cache."""
+    return v.get("source") or "tfl", v["line"], v["station_id"]
 
 
 # ---------------------------------------------------------------- TfL
@@ -202,14 +300,17 @@ def dedupe(arrivals):
     for a in arrivals:
         k = a.get("destinationNaptanId") or a.get("destinationName", "")
         t = int(a.get("timeToStation", 0))
-        h, dirn = heading(a), a.get("direction") or ""
-        # a blank on either side is "not stated", which contradicts nothing
+        h, dirn, vid = heading(a), a.get("direction") or "", str(a.get("vehicleId") or "")
+        # A blank on either side is "not stated", which contradicts nothing. Two
+        # stated, different train ids are two trains: rail times are whole minutes,
+        # so two services to Moorgate both expected at 08:12 would otherwise be one row.
         if any(k == sk and abs(t - st) <= 5
                and not (h and sh and h != sh)
                and not (dirn and sd and dirn != sd)
-               for sk, st, sh, sd in seen):
+               and not (vid and sv and vid != sv)
+               for sk, st, sh, sd, sv in seen):
             continue
-        seen.append((k, t, h, dirn))
+        seen.append((k, t, h, dirn, vid))
         out.append(a)
     return out
 
@@ -286,6 +387,13 @@ def group(arrivals, columns):
         (buckets[dirn] if dirn in buckets else homeless).append(a)
     if not arrivals or (not homeless and all(buckets[d] for d in wanted)):
         return [(c, buckets[c["direction"]]) for c in columns]
+    if not homeless:
+        # Every train states its direction and they all go one way: a closure, or a
+        # terminus that still fills the field. That is one column, not a puzzle to
+        # solve by destination: splitting eastbound trains into "towards Cockfosters"
+        # and "towards Arnos Grove" would lose the westbound column that the empty
+        # direction is the whole point of showing. fetch() names it from the compass.
+        return [(None, list(arrivals))]
 
     # the direction split failed; regroup everything by the first key that splits it
     for key in (heading,
@@ -355,21 +463,39 @@ def tidy_reason(reason, line):
     return out
 
 
-def fetch(settings):
-    """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
+def arrivals_for(settings):
+    """The raw predictions for one board, in TfL's shape, from whichever feed
+    carries the station."""
+    if settings.get("source") == "national-rail":
+        if rail is None:
+            raise RuntimeError("rail.py is missing: the installer copies it next to board.py")
+        board = rail.fetch(settings["station_id"], settings.get("rail_api_key") or "",
+                           settings.get("rail_api_url") or None)
+        return rail.predictions(board, dt.datetime.now(), settings["line"])
     q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
     # quote both: the settings file can hold anything, and a stray / or ? would
     # rewrite the path or the query instead of failing
     line = up.quote(settings["line"], safe="")
     stop = up.quote(settings["station_id"], safe="")
-    arrivals = requests.get(f"{TFL}/Line/{line}/Arrivals/{stop}", params=q, timeout=10)
-    arrivals.raise_for_status()
-    arrivals = arrivals.json()
+    r = requests.get(f"{TFL}/Line/{line}/Arrivals/{stop}", params=q, timeout=10)
+    r.raise_for_status()
+    arrivals = r.json()
     if not isinstance(arrivals, list):
         raise ValueError("arrivals: unexpected response")
+    return arrivals
+
+
+def fetch(settings):
+    """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
+    arrivals = arrivals_for(settings)
     arrivals.sort(key=lambda a: a.get("timeToStation", 1e9))
     arrivals = dedupe(arrivals)
 
+    # The status line is TfL's for every board. TfL publishes a status for the
+    # National Rail operators too, under the same line ids, so a Great Northern
+    # board gets a Great Northern status the same way the Piccadilly one does.
+    q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
+    line = up.quote(settings["line"], safe="")
     status_text, status_ok, status_why = None, False, ""
     try:
         r = requests.get(f"{TFL}/Line/{line}/Status", params=q, timeout=10)
@@ -381,12 +507,19 @@ def fetch(settings):
             worst = min(sts, key=lambda s: (1 if s.get("statusSeverity", 10) in (10, 18) else 0,
                                             s.get("statusSeverity", 10)))
             status_text, status_ok = worst["statusSeverityDescription"], True
-        status_why = tidy_reason(worst.get("reason") or "", line)
+            status_why = tidy_reason(worst.get("reason") or "", line)
     except Exception as e:
         print("status fetch failed:", e, file=sys.stderr, flush=True)
 
     groups = group(arrivals, settings["columns"])
     chains = [column_label(c, mine) for c, mine in groups]
+    # A rail board knows its compass words without a train to read them from, so at
+    # 02:00 its two empty columns say SOUTHBOUND and NORTHBOUND, not DEPARTURES twice.
+    # TfL boards have no such table: their platform words only come from the trains.
+    known = rail.LINES.get(settings["line"], {}) if rail and settings.get("source") == "national-rail" else {}
+    for i, (c, mine) in enumerate(groups):
+        if not mine and c and known.get(c.get("direction")):
+            chains[i] = [known[c["direction"]].upper()] + chains[i]
     labels = [ch[0] for ch in chains]
     for i, ch in enumerate(chains):
         # two columns under one heading tell the reader nothing: take the next step
@@ -399,7 +532,9 @@ def fetch(settings):
         towards = (c or {}).get("towards") or (next(iter(tows)) if len(tows) == 1 else "")
         if "TOWARDS" in label:
             towards = ""  # already in the heading
-        rows = [(row_text(a), int(a.get("timeToStation", 0))) for a in mine]
+        # a rail train past its timetable time with no estimate has no minutes to show
+        rows = [(row_text(a), None if (a.get("rail") or {}).get("overdue") else int(a.get("timeToStation", 0)))
+                for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
 
     # One direction running, and we can name the other one: keep the second column and
@@ -419,23 +554,38 @@ def explain(settings):
     The first thing to run when a direction is missing from the screen: it separates
     "TfL is not telling us about those trains" from "we were told and mislaid them",
     and those have very different fixes."""
-    q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
-    line = up.quote(settings["line"], safe="")
-    stop = up.quote(settings["station_id"], safe="")
-    url = f"{TFL}/Line/{line}/Arrivals/{stop}"
-    print(f'{settings["station_name"]}  [{settings["station_id"]}]  {settings["line"]} line')
-    print(url + "\n")
+    if settings.get("source") == "national-rail":
+        if rail is None:
+            raise RuntimeError("rail.py is missing: the installer copies it next to board.py")
+        key = settings.get("rail_api_key") or ""
+        print(f'{settings["station_name"]}  [{settings["station_id"]}]  National Rail, {settings["line"]}')
+        print(rail.url_for(settings.get("rail_api_url"), settings["station_id"]) + "\n")
+        if not key:
+            print("No rail_api_key in settings.json, so this board cannot fetch anything.")
+            print("Get one free at raildata.org.uk (subscribe to Live Departure Board), then:")
+            print("  sudo python3 portal.py --rail-key YOURKEY")
+            return
+        board = rail.fetch(settings["station_id"], key, settings.get("rail_api_url") or None)
+        rail.explain(board, dt.datetime.now(), settings["line"])
+        raw = rail.predictions(board, dt.datetime.now(), settings["line"])
+    else:
+        q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
+        line = up.quote(settings["line"], safe="")
+        stop = up.quote(settings["station_id"], safe="")
+        url = f"{TFL}/Line/{line}/Arrivals/{stop}"
+        print(f'{settings["station_name"]}  [{settings["station_id"]}]  {settings["line"]} line')
+        print(url + "\n")
 
-    r = requests.get(url, params=q, timeout=10)
-    r.raise_for_status()
-    raw = r.json()
-    if not isinstance(raw, list):
-        raise ValueError("arrivals: unexpected response")
-    print(f"TfL returned {len(raw)} prediction(s)")
-    tally = Counter((a.get("platformName") or "(no platform)",
-                     a.get("direction") or "(no direction)") for a in raw)
-    for (plat, dirn), n in sorted(tally.items()):
-        print(f"  {n:3d}  {plat:<26}  direction={dirn}")
+        r = requests.get(url, params=q, timeout=10)
+        r.raise_for_status()
+        raw = r.json()
+        if not isinstance(raw, list):
+            raise ValueError("arrivals: unexpected response")
+        print(f"TfL returned {len(raw)} prediction(s)")
+        tally = Counter((a.get("platformName") or "(no platform)",
+                         a.get("direction") or "(no direction)") for a in raw)
+        for (plat, dirn), n in sorted(tally.items()):
+            print(f"  {n:3d}  {plat:<26}  direction={dirn}")
 
     raw.sort(key=lambda a: a.get("timeToStation", 1e9))
     lost = len(raw) - len(dedupe(raw))
@@ -505,6 +655,8 @@ def text_w(d, s, f):
 
 
 def label_mins(secs):
+    if secs is None:
+        return "delayed"
     m = round(secs / 60)
     return "due" if m <= 0 else f"{m} min"
 
@@ -539,7 +691,8 @@ def clip(d, text, fnt, room):
         return text
     while text and d.textlength(text + "...", font=fnt) > room:
         text = text[:-1].rstrip() if " " not in text else text.rsplit(" ", 1)[0]
-    return (text + "...") if text else ""
+    # a clause that already ends in a full stop would otherwise show four dots
+    return (text.rstrip(".") + "...") if text else ""
 
 
 def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
@@ -573,7 +726,7 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           ss=2):
+           rotation=None, diag=None, address=None, ss=2):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -581,7 +734,8 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     ss=1 skips it, for a slow machine."""
     if ss > 1:
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
-                     status_why, now, updated, live, ss=1)
+                     status_why, now, updated, live, rotation=rotation, diag=diag,
+                     address=address, ss=1)
         return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -607,6 +761,22 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     clock = now.strftime("%H:%M")
     fc = font("light", 5.4 * u)
     d.text((W - pad, cy), clock, font=fc, fill=WHITE, anchor="rm")
+    # One dot per board on the rotation, the current one filled. Without them a
+    # station that changes on its own looks like the board losing its place, and
+    # someone waiting for their own station cannot tell whether it is still coming.
+    if rotation and rotation[1] > 1:
+        here, total = rotation
+        dr = 0.42 * u
+        step_d = 1.5 * u
+        dy = pad + 6.45 * u
+        last = W - pad - dr
+        for i in range(total):
+            dx = last - (total - 1 - i) * step_d
+            box = [dx - dr, dy - dr, dx + dr, dy + dr]
+            if i == here:
+                d.ellipse(box, fill=WHITE)
+            else:
+                d.ellipse(box, outline=DIM, width=max(1, round(0.13 * u)))
     rule_y = pad + 7.3 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
@@ -623,7 +793,15 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # the left, when we last heard from TfL on the right. From a sofa the eye
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
-    upd = "Updated " + ago(updated, now)
+    if address and (address[0] or address[1]):
+        # For the first minutes after a boot this corner carries the board's own
+        # address instead of the update age. The settings page is findable only by
+        # someone who knows where to look, and this is the one moment they are looking.
+        host, ip = address
+        upd = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
+                                                     f"http://{ip}:8080" if ip else "") if x)
+    else:
+        upd = "Updated " + ago(updated, now)
     fupd = font("regular", 1.35 * u)
     d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
     # Everything on the left of this line has to stop before the timestamp.
@@ -631,11 +809,23 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
-    if not live and updated is None:
+    feed = "National Rail" if settings.get("source") == "national-rail" else "Transport for London"
+    if not live and diag and diag[0]:
+        # The network check knows which failure this is. Say that, in the words a
+        # person in the room can act on, rather than "no data".
+        fbold = font("bold", 1.9 * u)
+        d.text((x, fy), diag[0], font=fbold, fill=ORANGE, anchor="lm")
+        x2 = x + text_w(d, diag[0], fbold) + 0.8 * u
+        # there is no last update to show before the first good fetch
+        why = diag[1] if updated else re.sub(r"\.?\s*Showing the last update", "", diag[1]).strip()
+        why = clip(d, "- " + why, fs, right_edge - x2) if why else ""
+        if why and why not in ("-...", "- ..."):
+            d.text((x2, fy), why, font=fs, fill=DIM, anchor="lm")
+    elif not live and updated is None:
         # Cold boot: the Pi is up before the network is, so the first fetch always
         # fails. There is no last update to show, and saying there is reads as a
         # fault to anyone walking past. Say what is actually happening instead.
-        d.text((x, fy), clip(d, "Starting up, waiting for Transport for London", fs, right_edge - x), font=fs, fill=DIM, anchor="lm")
+        d.text((x, fy), clip(d, f"Starting up, waiting for {feed}", fs, right_edge - x), font=fs, fill=DIM, anchor="lm")
     elif not live:
         d.text((x, fy), clip(d, "No live data, showing the last update", fs, right_edge - x), font=fs, fill=ORANGE, anchor="lm")
     elif not status_ok:
@@ -696,12 +886,100 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         for j, (dest, secs) in enumerate(rows):
             yc = rows_top + step * j + step / 2
             if j < len(rows) - 1:
-                d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=(0, 40, 140))
+                # the connector between dots, in a shade of the line: Piccadilly blue
+                # between Great Northern purple dots read as a mistake
+                d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=tuple(int(c * 0.75) for c in line_colour))
             rr = 0.62 * u
             d.ellipse([dot_x - rr, yc - rr, dot_x + rr, yc + rr], fill=line_colour if line != "northern" else WHITE)
-            d.text((dot_x + 1.9 * u, yc), dest, font=fd, fill=WHITE, anchor="lm")
             m = label_mins(secs)
+            # the destination stops short of the minutes: "Hainault via Newbury Park"
+            # and "Stevenage via Hertford North" both used to run into them
+            room = (x0 + col_w) - text_w(d, m, fm) - 1.5 * u - (dot_x + 1.9 * u)
+            shown = clip(d, dest, fd, room)
+            if shown.endswith(" via..."):
+                # "Stevenage via..." says less than "Stevenage": lose the branch whole.
+                # "Edgware via Charing..." still names it, so that one stays as it is.
+                shown = clip(d, dest.split(" via ", 1)[0], fd, room)
+            d.text((dot_x + 1.9 * u, yc), shown, font=fd, fill=WHITE, anchor="lm")
             d.text((x0 + col_w, yc), m, font=fm, fill=ORANGE, anchor="rm")
+    return img
+
+
+def qr_image(data, size):
+    """A QR code, dark on light, `size` pixels square. None without the library.
+    Dark on light on purpose: phone cameras read an inverted code badly or not at all."""
+    if qrcode is None:
+        return None
+    try:
+        q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        q.add_data(data)
+        q.make(fit=True)
+        im = q.make_image().convert("RGB")
+        return im.resize((int(size), int(size)), Image.NEAREST)
+    except Exception as e:                      # noqa: BLE001
+        print("qr failed:", e, file=sys.stderr, flush=True)
+        return None
+
+
+def render_setup(W, H, state, ssid, hotspot, now, password="", ss=2):
+    """The screen while the board has no WiFi: what to join, and what to open.
+
+    One still screen, large, for someone holding a phone across the room. The
+    ticker taught this: setup worked first time with no instructions once the
+    device gave them itself. "CONNECTING" is the moment after a successful join,
+    so the person knows it took and can put the phone down."""
+    if ss > 1:
+        return render_setup(W * ss, H * ss, state, ssid, hotspot, now, password=password, ss=1).reduce(ss)
+    u = W / 100.0
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    pad = 2.5 * u
+    blue = LINE_COLOURS["piccadilly"]
+    r = 3.6 * u
+    cx, cy = pad + r * 1.05, pad + 3.1 * u
+    paste_roundel(img, cx, cy, r, blue, label="UNDERGROUND")
+    tx = cx + r * 1.05 + 1.4 * u
+    d.text((tx, pad + 0.4 * u), "TUBE BOARD", font=font("regular", 3.2 * u), fill=WHITE)
+    d.text((tx, pad + 3.9 * u), "Setting up", font=font("light", 2.0 * u), fill=DIM)
+    d.text((W - pad, cy), now.strftime("%H:%M"), font=font("light", 5.4 * u), fill=WHITE, anchor="rm")
+    rule_y = pad + 7.3 * u
+    d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=blue)
+
+    left, y = pad, rule_y + 6.0 * u
+    qr_side = 26 * u
+    text_room = W - pad - qr_side - 4 * u - left
+    if state == "CONNECTING":
+        d.text((left, y), "WIFI OK", font=font("bold", 7.0 * u), fill=GREEN)
+        who = f"Connecting to {ssid}" if ssid else "Connecting to the WiFi"
+        d.text((left, y + 10 * u), clip(d, who, font("regular", 3.4 * u), W - 2 * pad),
+               font=font("regular", 3.4 * u), fill=WHITE)
+        d.text((left, y + 15 * u), "The trains will be up in a moment.",
+               font=font("light", 2.4 * u), fill=DIM)
+        return img
+    d.text((left, y), "JOIN WIFI:", font=font("bold", 5.0 * u), fill=ORANGE)
+    d.text((left, y + 6.5 * u), clip(d, hotspot, font("bold", 6.2 * u), text_room),
+           font=font("bold", 6.2 * u), fill=WHITE)
+    steps = [f"1. On a phone, join that WiFi network. Password: {password}" if password
+             else "1. On a phone, join that WiFi network. No password.",
+             f"2. If no page opens by itself, open  http://{HOTSPOT_IP}",
+             "3. Pick your own WiFi there and type its password.",
+             "The board joins it and the trains come up."]
+    yy = y + 16 * u
+    f_step = font("light", 2.3 * u)
+    for line in steps:
+        d.text((left, yy), clip(d, line, f_step, text_room), font=f_step, fill=DIM)
+        yy += 3.3 * u
+    # the QR carries the join details; a phone camera reads it and offers to join
+    # the join details a phone camera reads; ; , : \ and " are special in this format
+    esc = lambda t: re.sub(r'([\\;,:"])', r"\\\1", t)             # noqa: E731
+    wifi = (f"WIFI:T:WPA;S:{esc(hotspot)};P:{esc(password)};;" if password
+            else f"WIFI:T:nopass;S:{esc(hotspot)};;")
+    qr = qr_image(wifi, qr_side)
+    if qr is not None:
+        qx, qy = int(W - pad - qr.width), int(rule_y + 4.5 * u)
+        img.paste(qr, (qx, qy))
+        d.text((qx + qr.width / 2, qy + qr.height + 1.8 * u), "Scan to join",
+               font=font("light", 2.0 * u), fill=DIM, anchor="mm")
     return img
 
 
@@ -769,57 +1047,151 @@ def main():
     ap.add_argument("--size", default="1920x1080", help="frame size for --png")
     ap.add_argument("--explain", action="store_true",
                     help="print what TfL returns for this station and how it is split "
-                         "into columns, then exit")
+                         "into columns, then exit. Every board on the rotation, in turn")
+    ap.add_argument("--view", type=int, default=1,
+                    help="which board of the rotation --png draws (1 is the first)")
+    ap.add_argument("--setup", action="store_true",
+                    help="with --png: draw the WiFi setup screen instead of a board")
     args = ap.parse_args()
 
     settings = Settings()
+    views = station_views(settings)
     if args.explain:
-        explain(settings)
+        for i, v in enumerate(views):
+            if i:
+                print("\n" + "-" * 70 + "\n")
+            if len(views) > 1:
+                print(f"Board {i + 1} of {len(views)}")
+            try:
+                explain(v)
+            except Exception as e:                  # noqa: BLE001
+                # a station TfL will not answer for is the usual reason to run this,
+                # so it must not hide the boards after it
+                print("could not explain this board:", e)
+        return
+    if args.png and args.setup:
+        W, H = (int(n) for n in args.size.split("x"))
+        hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
+        password = netdiag.hotspot_password() if netdiag else ""
+        render_setup(W, H, "HOTSPOT", "", hotspot, dt.datetime.now(), password=password).save(args.png)
+        print(f"wrote {args.png} (the setup screen)", flush=True)
         return
     if args.png:
-        W, H = (int(v) for v in args.size.split("x"))
-        cols, status, status_ok, status_why = fetch(settings)
+        i = max(0, min(len(views) - 1, args.view - 1))
+        if i != args.view - 1:
+            # the clone's settings.json holds one board, so --view 2 there is a common slip
+            print(f"only {len(views)} board(s) in settings, drawing board {i + 1}",
+                  file=sys.stderr, flush=True)
+        v = views[i]
+        W, H = (int(n) for n in args.size.split("x"))
+        cols, status, status_ok, status_why = fetch(v)
         now = dt.datetime.now()
-        render(W, H, settings, cols, status, status_ok, status_why, now, now, True).save(args.png)
-        print("wrote", args.png, flush=True)
+        render(W, H, v, cols, status, status_ok, status_why, now, now, True,
+               rotation=(i, len(views))).save(args.png)
+        print(f"wrote {args.png} (board {i + 1} of {len(views)})", flush=True)
         return
 
     fb = Framebuffer()
+
+    def nudge_screen(force):
+        # screen.py promises never to raise, but it reads brightness values that a
+        # hand-edited settings.json can hold as anything; that must not restart us
+        try:
+            for msg in screen.apply(settings.data, dt.datetime.now(), force=force):
+                print("screen:", msg, flush=True)
+        except Exception as e:                  # noqa: BLE001
+            print("screen control failed:", e, file=sys.stderr, flush=True)
+
     if screen:
         # Talk to the monitor once at startup so a restart re-asserts whatever the
         # schedule says, even if someone poked the buttons before it was framed.
-        for msg in screen.apply(settings.data, dt.datetime.now(), force=True):
-            print("screen:", msg, flush=True)
+        nudge_screen(True)
+    # Every interval runs on the monotonic clock. A Pi has no clock battery: at boot
+    # the wall clock is whatever was saved at the last shutdown, and NTP steps it
+    # forward by however long the Pi was off as soon as the WiFi is up, which on
+    # time.time() would end the address card's three minutes the moment it had a network.
+    boot = time.monotonic()
     last_screen = 0.0
-    cols, status, status_ok, status_why, updated, live = [], None, False, "", None, False
-    # draw once before the first fetch: a blank wall screen reads as a dead unit, and
-    # with no WiFi the first request can hold for its full ten seconds
-    fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
-    last_fetch = 0.0
-    failures = 0
+    idx = 0
+    last_rotate = boot
+    # One entry per board, keyed by source, line and stop rather than by position, so
+    # editing the rotation keeps the data for the stations that stayed in it.
+    boards = {}
     draw_failures = 0
-    while True:
-        changed_settings = settings.reload()
-        t = time.time()
-        # Nudge the screen every 30 s, and at once if the settings just changed.
-        if screen and (changed_settings or t - last_screen >= 30):
-            last_screen = t
-            for msg in screen.apply(settings.data, dt.datetime.now(),
-                                    force=changed_settings):
-                print("screen:", msg, flush=True)
-        if t - last_fetch >= settings["refresh_seconds"] or not cols:
-            last_fetch = t
-            try:
-                cols, status, status_ok, status_why = fetch(settings)
-                updated, live, failures = dt.datetime.now(), True, 0
-            except Exception as e:
-                failures += 1
-                print("fetch failed:", e, file=sys.stderr, flush=True)
-                # keep showing the last board; after ~3 minutes of failures say so
-                if failures >= max(1, 180 // settings["refresh_seconds"]):
-                    live = False
+    hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
+    password = netdiag.hotspot_password() if netdiag else ""
+    # What the network is doing, asked only after a fetch has failed for a reason the
+    # fetch could not name itself, and at most every 30 s.
+    net = {"state": "", "ssid": "", "diag": None, "checked": 0.0, "said": None}
+    addr = {"value": None, "checked": 0.0}
+
+    def network_check(v):
+        if netdiag is None or time.monotonic() - net["checked"] < 30:
+            return
+        net["checked"] = time.monotonic()
         try:
-            fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
+            diag, st, ssid = netdiag.diagnose(hotspot, v.get("source") or "tfl")
+            net.update(state=st, ssid=ssid, diag=diag)
+            said = (st, ssid, diag[0])
+            if said != net["said"]:             # the journal gets changes, not a line every 30 s
+                net["said"] = said
+                print(f"network: {st} {ssid or ''} - {diag[0]}", flush=True)
+        except Exception as e:                  # noqa: BLE001
+            print("network check failed:", e, file=sys.stderr, flush=True)
+
+    def refusal(v, e):
+        """The feed answered, and the answer was no. That is this board's problem,
+        not the network's: it is said here, in the fetch's own words, and the
+        network is not asked. "Not answering" would have someone checking the
+        router when the fix is a key or a station id."""
+        feed = "National Rail" if v.get("source") == "national-rail" else "Transport for London"
+        if rail and isinstance(e, rail.KeyProblem):
+            return ("Rail key needed", str(e))
+        if isinstance(e, requests.exceptions.HTTPError):
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            # requests' own text carries the URL and with it the app key: not for the wall
+            if code == 404:
+                return (f"{feed} does not know this stop", f"HTTP 404 for {v['station_id']}. Check the station in the settings")
+            if code in (401, 403):
+                return (f"{feed} refused the request", f"HTTP {code}. Check the key in the settings")
+            if code == 429:
+                return (f"{feed} is rate limiting", "Too many requests from here. It clears in a minute")
+            if code is not None:
+                return (f"{feed} answered HTTP {code}", "Showing the last update")
+        return None
+
+    def cached(v):
+        return boards.setdefault(view_key(v), {
+            "cols": [], "status": None, "status_ok": False, "status_why": "",
+            "updated": None, "live": False, "last_fetch": 0.0, "failures": 0,
+            "diag": None, "said": None})
+
+    def draw(v, b, rotation):
+        """Put one board on the screen. Draw failures are counted here because the
+        loop draws twice a refresh, and five in a row is still the give-up point."""
+        nonlocal draw_failures
+        try:
+            now = dt.datetime.now()
+            up = time.monotonic() - boot
+            # No WiFi to speak of: the screen's job is to get someone through setup.
+            # HOTSPOT waits a minute into the process, because comitup raises its
+            # hotspot first on every boot and only then joins the known network, and a
+            # passer-by should not read setup instructions after every power cut.
+            setup = net["state"] == "CONNECTING" or (net["state"] == "HOTSPOT" and up >= 60)
+            if setup and not b["live"]:
+                frame = render_setup(fb.w, fb.h, net["state"], net["ssid"], hotspot, now,
+                                     password=password)
+            else:
+                if netdiag and up < 180 and time.monotonic() - addr["checked"] >= 20:
+                    addr["checked"] = time.monotonic()
+                    addr["value"] = netdiag.address()  # the IP can arrive a while after boot
+                # this board's own refusal first, the network's verdict otherwise
+                diag = None if b["live"] else (b["diag"] or net["diag"])
+                frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
+                               b["status_why"], now, b["updated"], b["live"],
+                               rotation=rotation, diag=diag,
+                               address=addr["value"] if up < 180 else None)
+            fb.show(frame)
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
@@ -829,13 +1201,81 @@ def main():
             if draw_failures >= 5:
                 print("giving up on the screen, restarting", file=sys.stderr, flush=True)
                 raise SystemExit(1)
+
+    while True:
+        changed_settings = settings.reload()
+        if changed_settings:
+            views = station_views(settings)
+            if idx >= len(views):
+                idx = 0
+        t = time.monotonic()
+        # Nudge the screen every 30 s, and at once if the settings just changed.
+        if screen and (changed_settings or t - last_screen >= 30):
+            last_screen = t
+            nudge_screen(changed_settings)
+        # settings.json can be edited by hand. A bad number in either of these must
+        # not put the board in a restart loop on a wall nobody can reach. (json reads
+        # Infinity, and int(inf) is an OverflowError, not a ValueError.)
+        try:
+            rotate_s = max(5, min(300, int(settings["rotate_seconds"])))
+        except (TypeError, ValueError, OverflowError):
+            rotate_s = 30
+        try:
+            refresh_s = max(5, int(settings["refresh_seconds"]))
+        except (TypeError, ValueError, OverflowError):
+            refresh_s = 30
+        if len(views) > 1 and t - last_rotate >= rotate_s:
+            idx = (idx + 1) % len(views)
+            last_rotate = t
+        v = views[idx]
+        b = cached(v)
+        rotation = (idx, len(views))
+        # Draw first, fetch second. Switching boards then never waits on the network:
+        # the station that comes up is the one already in hand, and its own refresh
+        # lands straight after. Fetching first would let a ten-second TfL timeout
+        # hold the old station on the screen and stop the clock mid-rotation. On a
+        # cold boot this is also the blank-looking first frame, which beats a dead
+        # screen while the first request runs.
+        draw(v, b, rotation)
+        if t - b["last_fetch"] >= refresh_s or not b["cols"]:
+            b["last_fetch"] = t
+            try:
+                b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
+                b["updated"], b["live"], b["diag"] = dt.datetime.now(), True, None
+                if b["failures"]:
+                    print(f'fetch ok again ({v["station_name"]}, {v["line"]})', flush=True)
+                b["failures"], b["said"] = 0, None
+                net.update(state="", diag=None)   # a good fetch is the whole network diagnosis
+            except Exception as e:
+                b["failures"] += 1
+                # name the board: with a rotation, "fetch failed" alone does not say
+                # which station is the one that cannot be reached. The same failure
+                # every pass is one journal line, not a thousand a day.
+                if str(e) != b["said"]:
+                    b["said"] = str(e)
+                    print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,
+                          file=sys.stderr, flush=True)
+                b["diag"] = refusal(v, e)
+                if b["diag"] is None:
+                    network_check(v)
+                # Keep showing the last board, and after three minutes without a good
+                # fetch say so. Measured in time, not in failures: a board is only
+                # fetched while it is on screen, so counting failures would wait three
+                # minutes for every board on the rotation before admitting anything.
+                if b["updated"] is None or (dt.datetime.now() - b["updated"]).total_seconds() >= 180:
+                    b["live"] = False
+            # Draw again whatever happened: the frame before the fetch is as old as the
+            # fetch took, and a failure that changed the status line has to show.
+            draw(v, b, rotation)
         # Redraw every 10 s. The clock only needs a minute, but the "updated Xs
         # ago" line has to keep up or it is quietly lying, and a frame costs
-        # about a third of a second on a Pi 3.
-        time.sleep(max(1.0, min(10.0,
-                                60.0 - dt.datetime.now().second,
-                                settings["refresh_seconds"] - (time.time() - last_fetch))))
-
+        # about a third of a second on a Pi 3. With a rotation, wake for the
+        # switch too, or a 30 s rotation drifts by up to ten.
+        waits = [10.0, 60.0 - dt.datetime.now().second,
+                 refresh_s - (time.monotonic() - b["last_fetch"])]
+        if len(views) > 1:
+            waits.append(rotate_s - (time.monotonic() - last_rotate))
+        time.sleep(max(1.0, min(waits)))
 
 if __name__ == "__main__":
     main()

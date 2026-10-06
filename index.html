@@ -1,3 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Piccadilly Line Board</title>
 <meta name="description" content="Live Piccadilly line departures from Arsenal, from the TfL Unified API.">
 <meta property="og:type" content="website">
@@ -147,7 +150,7 @@
   .status .lbl{color:var(--dim);font-weight:300}
   .status .val{color:var(--good);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .status .val.bad{color:var(--time)}
-  .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block}
+  .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block;color:var(--good)}
   .src{color:var(--dimmer);font-weight:300;flex:0 0 auto;display:flex;align-items:center;gap:1cqw}
   .mode{
     font-size:.82em;
@@ -238,10 +241,9 @@
     <div class="status">
       <span class="lbl">Status:</span>
       <svg class="tick" viewBox="0 0 20 20" role="img" aria-label="status icon" id="tick">
-        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"
-                style="color:var(--good)"></circle>
-        <path d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round" style="color:var(--good)"></path>
+        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+        <path id="tickPath" d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
       <span class="val" id="status">Good Service</span>
     </div>
@@ -255,7 +257,8 @@
 
 <script>
 // ---------------------------------------------------------------------
-// CONFIG - change these three lines for a different station or line.
+// CONFIG - change these lines for a different station on the Piccadilly line.
+// The line's name, colour and roundel are in the markup and the CSS above.
 // Find a station id: https://api.tfl.gov.uk/StopPoint/Search/{name}?modes=tube
 // ---------------------------------------------------------------------
 const LINE       = "piccadilly";
@@ -290,10 +293,10 @@ const pad = (n) => String(n).padStart(2, "0");
 const hhmm = (d) => pad(d.getHours()) + ":" + pad(d.getMinutes());
 
 function tidy(name) {
+  // one tail only: stripping twice turns "Battersea Power Station Underground
+  // Station" into "Battersea Power"
   return String(name || "")
-    .replace(/\s+Underground Station$/i, "")
-    .replace(/\s+Rail Station$/i, "")
-    .replace(/\s+Station$/i, "")
+    .replace(/\s+((Underground|Rail|DLR)\s+)?Station$/i, "")
     .trim();
 }
 
@@ -302,10 +305,217 @@ function label(mins) {
   return mins + " min";
 }
 
-function paint(colId, entries) {
+// When the trains on screen were fetched; null until the first live load. The
+// honest health line: a clock time just sits there looking plausible.
+let lastGood = null;
+function ago(then, now) {
+  const s = Math.max(0, Math.floor((now - then) / 1000));
+  if (s < 10) return "just now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h ago";
+}
+
+// The tick and the bang are drawn, not typed: a font without the glyph would put
+// an empty box on the page and nobody would know why.
+const TICK_D = "M6.2 10.3 L8.9 13 L13.9 7.2";
+const BANG_D = "M10 5.5 V11.2 M10 13.6 V14.4";
+
+// ---------------------------------------------------------------------
+// Putting trains in columns. A port of pi/board.py's group(), split_by(),
+// column_label() and dedupe(): TfL omits "direction" at every terminus and
+// sends it empty on much of the DLR, the Elizabeth line and the Overground,
+// so filtering on it alone left two empty columns while trains were due.
+// The ladder: direction, then the platform heading, then "towards", then the
+// destination; and a train the key cannot name goes with the trains to its
+// destination or in its direction, else the split is refused, because a train
+// under the wrong heading sends someone to the wrong platform.
+// ---------------------------------------------------------------------
+const COMPASS = new Set(["northbound", "southbound", "eastbound", "westbound", "inner rail", "outer rail"]);
+const OPPOSITE = { Northbound: "Southbound", Southbound: "Northbound", Eastbound: "Westbound",
+                   Westbound: "Eastbound", "Inner Rail": "Outer Rail", "Outer Rail": "Inner Rail" };
+
+const titleCase = (s) => String(s).toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+
+// 'Westbound - Platform 2' -> 'Westbound'. Only a real direction counts.
+function heading(a) {
+  const h = String(a.platformName || "").split(" - ")[0].trim();
+  return COMPASS.has(h.toLowerCase()) ? titleCase(h) : "";
+}
+
+// 'Heathrow via T4 Loop' -> 'Heathrow'; TfL's "Check Front of Train" is not a place.
+function tidyTowards(s) {
+  s = String(s || "").split(" via ")[0].trim();
+  if (s.toLowerCase() === "check front of train") return "";
+  for (const tail of [" Terminal 4", " Terminal 5", " Terminals 2 & 3", " T4", " T5"]) {
+    if (s.endsWith(tail)) s = s.slice(0, -tail.length);
+  }
+  return s;
+}
+
+// The destination, plus the branch when the branch is the fact that matters.
+function rowText(a) {
+  const tow = String(a.towards || "");
+  const dest = tidy(a.destinationName);
+  if (!dest) return tow || "?";
+  if (tow.includes(" via ")) {
+    const via = tow.split(" via ")[1].trim();
+    const flat = dest.toLowerCase().replace(/terminal /g, "t");
+    const words = via.toLowerCase().split(/\s+/).filter((w) => w !== "loop");
+    if (words.length && !words.some((w) => flat.includes(w))) return dest + " via " + via;
+  }
+  return dest;
+}
+
+// The DLR files one prediction per platform for the same train; two trains that
+// plainly go opposite ways are two trains.
+function dedupe(arrivals) {
+  const seen = [], out = [];
+  for (const a of arrivals) {
+    const k = a.destinationNaptanId || a.destinationName || "";
+    const t = Math.trunc(a.timeToStation || 0);
+    const h = heading(a), dirn = a.direction || "";
+    const dup = seen.some(([sk, st, sh, sd]) =>
+      sk === k && Math.abs(t - st) <= 5 && !(h && sh && h !== sh) && !(dirn && sd && dirn !== sd));
+    if (dup) continue;
+    seen.push([k, t, h, dirn]);
+    out.push(a);
+  }
+  return out;
+}
+
+function splitBy(arrivals, key) {
+  const keys = arrivals.map(key);
+  const names = [...new Set(keys.filter(Boolean))].sort();   // sorted, so columns cannot swap sides
+  if (names.length < 2) return null;
+  const groups = Object.fromEntries(names.map((n) => [n, arrivals.filter((_, i) => keys[i] === n)]));
+  const byDest = {}, byDir = {};
+  for (const n of names) {
+    for (const x of groups[n]) {
+      const dest = tidy(x.destinationName);
+      if (dest) (byDest[dest] ||= new Set()).add(n);
+      if (x.direction) (byDir[x.direction] ||= new Set()).add(n);
+    }
+  }
+  for (let i = 0; i < arrivals.length; i++) {
+    if (keys[i]) continue;
+    const a = arrivals[i];
+    const d = byDest[tidy(a.destinationName)], r = a.direction ? byDir[a.direction] : null;
+    const home = d && d.size === 1 ? d : r && r.size === 1 ? r : null;
+    if (!home) return null;
+    groups[[...home][0]].push(a);
+  }
+  for (const n of names) groups[n].sort((x, y) => (x.timeToStation ?? 1e9) - (y.timeToStation ?? 1e9));
+  return names.map((n) => groups[n]);
+}
+
+function group(arrivals, columns) {
+  const wanted = columns.map((c) => c.api);
+  const votes = {};
+  for (const a of arrivals) {
+    const h = heading(a), d = a.direction;
+    if (h && wanted.includes(d)) { votes[h] ||= {}; votes[h][d] = (votes[h][d] || 0) + 1; }
+  }
+  const headDir = {};
+  for (const [h, v] of Object.entries(votes)) {
+    headDir[h] = Object.entries(v).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? 1 : -1))[0][0];
+  }
+  const buckets = Object.fromEntries(wanted.map((d) => [d, []]));
+  const homeless = [];
+  for (const a of arrivals) {
+    let d = a.direction;
+    if (!(d in buckets)) d = headDir[heading(a)];
+    (d in buckets ? buckets[d] : homeless).push(a);
+  }
+  if (!arrivals.length || (!homeless.length && wanted.every((d) => buckets[d].length))) {
+    return columns.map((c) => [c, buckets[c.api]]);
+  }
+  // Every train states its direction and they all go one way: a closure, or a
+  // terminus that still fills the field. One column, not a split by destination,
+  // or the empty direction's column is lost; columnsFor() names it from the compass.
+  if (!homeless.length) return [[null, arrivals.slice()]];
+  for (const key of [heading, (a) => tidyTowards(a.towards), (a) => tidy(a.destinationName)]) {
+    const parts = splitBy(arrivals, key);
+    if (parts && parts.length >= 2 && parts.length <= Math.max(2, columns.length)) return parts.map((p) => [null, p]);
+  }
+  return [[null, arrivals.slice()]];
+}
+
+// Headings a passenger can act on, most specific first; one value for the whole column.
+function columnLabel(c, mine) {
+  const one = (xs) => { const s = new Set(xs.filter(Boolean)); return s.size === 1 ? [...s][0] : ""; };
+  const head = one(mine.map(heading)), tow = one(mine.map((a) => tidyTowards(a.towards)));
+  const dest = one(mine.map((a) => tidy(a.destinationName)));
+  return [head, (c && c.name) || "", tow ? "Towards " + tow : "", dest, "Departures"].filter(Boolean).map((x) => x.toUpperCase());
+}
+
+// The two columns the page draws, from the raw arrivals.
+function columnsFor(arrivals) {
+  const groups = group(dedupe(arrivals), COLUMNS);
+  const chains = groups.map(([c, mine]) => columnLabel(c, mine));
+  const labels = chains.map((ch) => ch[0]);
+  chains.forEach((ch, i) => {
+    // two columns under one heading tell the reader nothing: take the next step
+    if (labels.filter((l) => l === labels[i]).length > 1) {
+      const next = ch.slice(ch.indexOf(labels[i]) + 1).find((x) => !labels.includes(x));
+      if (next) labels[i] = next;
+    }
+  });
+  const cols = groups.map(([c, mine], i) => {
+    const tows = new Set(mine.map((a) => tidyTowards(a.towards)).filter(Boolean));
+    // the trains say where they go; the config's towards is only for before they do
+    let towards = (tows.size === 1 ? [...tows][0] : "") || (c && c.towards) || "";
+    if (labels[i].includes("TOWARDS")) towards = "";
+    return { label: labels[i], towards, rows: mine.map((a) => [rowText(a), Math.round(a.timeToStation / 60)]) };
+  });
+  // One direction running and the other nameable: keep its column and let it say
+  // it is empty, rather than letting the running one go full width.
+  if (cols.length === 1 && COLUMNS.length === 2) {
+    const other = OPPOSITE[titleCase(cols[0].label)];
+    if (other) cols.push({ label: other.toUpperCase(), towards: "", rows: [] });
+  }
+  return cols;
+}
+
+// Which of a line's statuses to show: the worst, with disruption ranked above
+// "Good Service" whatever its number, and the reason trimmed to its cause.
+function worstStatus(status) {
+  const sts = ((status && status[0] && status[0].lineStatuses) || []).filter((s) => s.statusSeverityDescription);
+  if (!sts.length) return null;
+  const rank = (s) => [([10, 18].includes(s.statusSeverity) ? 1 : 0), s.statusSeverity ?? 10];
+  sts.sort((a, b) => { const [x1, x2] = rank(a), [y1, y2] = rank(b); return x1 - y1 || x2 - y2; });
+  return sts[0];
+}
+
+function tidyReason(reason) {
+  let r = String(reason || "").trim();
+  if (!r) return "";
+  if (r.slice(0, 40).includes(":")) r = r.split(":").slice(1).join(":").trim();
+  const m = r.match(/\b(no service|no through service|severe delays|minor delays|suspended|part suspended|closed|part closure|reduced service|replacement bus)\b/i);
+  if (m && m.index) r = r.slice(m.index);
+  const keep = [];
+  for (const sentence of r.replace(/\n/g, " ").split(". ")) {
+    const s = sentence.trim();
+    if (!s) continue;
+    const low = s.toLowerCase();
+    if (low.includes("accepting tickets") || low.includes("valid on") || low.includes("reasonable route")) break;
+    keep.push(s);
+    if (keep.join(". ").length > 110) break;
+  }
+  let out = keep.join(". ").replace(/[ .]+$/, "");
+  for (const lead of ["Severe delays ", "Minor delays ", "Delays ", "Part suspended ", "Suspended ", "Part closure ", "Part closed ", "Reduced service "]) {
+    if (out.toLowerCase().startsWith(lead.toLowerCase())) { out = out.slice(lead.length); break; }
+  }
+  return out;
+}
+
+function paint(colId, entries, present = true) {
   const box = $(colId);
   box.textContent = "";
   if (!entries.length) {
+    // an empty column is a fact about the service, so it says so; a column that
+    // does not exist (one destination, no heading: one board-wide list) says nothing
+    if (!present) return;
     const p = document.createElement("div");
     p.className = "empty";
     p.textContent = "No trains reported";
@@ -337,36 +547,51 @@ function showSample() {
 }
 
 function tickClock() {
-  $("clock").textContent = hhmm(new Date());
+  const now = new Date();
+  $("clock").textContent = hhmm(now);
+  if (lastGood) $("updated").textContent = ago(lastGood, now);
 }
 
 async function load() {
   const q = APP_KEY ? "?app_key=" + encodeURIComponent(APP_KEY) : "";
   const base = "https://api.tfl.gov.uk/Line/" + LINE;
 
-  const [arrivals, status] = await Promise.all([
-    fetch(base + "/Arrivals/" + STATION_ID + q).then((r) => r.json()),
-    fetch(base + "/Status" + q).then((r) => r.json())
-  ]);
-
+  const arrivals = await fetch(base + "/Arrivals/" + STATION_ID + q).then((r) => r.json());
   if (!Array.isArray(arrivals)) throw new Error("unexpected arrivals response");
 
-  arrivals.sort((a, b) => a.timeToStation - b.timeToStation);
-  for (const c of COLUMNS) {
-    const rows = arrivals
-      .filter((a) => a.direction === c.api)
-      .map((a) => [tidy(a.destinationName), Math.round(a.timeToStation / 60)]);
-    paint("col" + c.id, rows);
+  // The status is a separate question: a rate limit or a bad body here must not
+  // lose the trains, and a status we never read must not be drawn as a green tick.
+  let s = null;
+  try {
+    const st = await fetch(base + "/Status" + q).then((r) => r.json());
+    if (Array.isArray(st)) s = worstStatus(st);
+  } catch (e) {
+    console.warn("status fetch failed:", e);
   }
 
-  const s = status && status[0] && status[0].lineStatuses && status[0].lineStatuses[0];
-  const text = (s && s.statusSeverityDescription) || "Good Service";
-  const el = $("status");
-  el.textContent = text;
-  el.classList.toggle("bad", text.toLowerCase() !== "good service");
-  $("tick").style.color = text.toLowerCase() === "good service" ? "" : "var(--time)";
+  arrivals.sort((a, b) => a.timeToStation - b.timeToStation);
+  // the headings come from the trains themselves, as on the Pi board: EASTBOUND
+  // where the platforms say so, TOWARDS X where they do not
+  const cols = columnsFor(arrivals);
+  ["A", "B"].forEach((id, i) => {
+    const col = cols[i];
+    $("dir" + id + "Name").textContent = col ? col.label : "";
+    $("dir" + id + "Towards").textContent = col ? col.towards : "";
+    $("dir" + id + "Towards").parentElement.style.visibility = col && col.towards ? "" : "hidden";
+    paint("col" + id, col ? col.rows : [], !!col);
+  });
 
-  $("updated").textContent = hhmm(new Date());
+  const text = s ? s.statusSeverityDescription : "Service status unknown";
+  const why = s ? tidyReason(s.reason) : "";
+  const good = !!s && ["good service", "no issues"].includes(text.toLowerCase());
+  const el = $("status");
+  el.textContent = why ? text + " - " + why : text;
+  el.classList.toggle("bad", !good);
+  $("tick").style.color = good ? "" : "var(--time)";
+  $("tickPath").setAttribute("d", good ? TICK_D : BANG_D);
+
+  lastGood = new Date();
+  $("updated").textContent = ago(lastGood, lastGood);
   const mode = $("mode");
   mode.textContent = "live";
   mode.classList.add("live");
@@ -376,10 +601,12 @@ async function refresh() {
   try {
     await load();
   } catch (e) {
-    // Offline, rate limited, or running somewhere that blocks the request:
-    // keep the sample board on screen and say plainly that it is a sample.
+    // Offline, rate limited, or running somewhere that blocks the request. Before
+    // the first live load the board on screen is the sample; after it, it is the
+    // last live board, with "Last updated" counting up to say how old.
+    console.warn("refresh failed:", e);
     const mode = $("mode");
-    mode.textContent = "sample data";
+    mode.textContent = lastGood ? "no live data" : "sample data";
     mode.classList.remove("live");
   }
 }
