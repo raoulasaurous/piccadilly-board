@@ -26,6 +26,11 @@ import requests
 # setting (rail_api_url) and this is only its default.
 DEFAULT_URL = "https://api1.raildata.org.uk/1010-live-departure-board-dep/LDBWS/api/20220120"
 
+class KeyProblem(ValueError):
+    """No key, or one the feed refused. A settings problem, not a network one: the
+    board must not blame the feed or the WiFi for it."""
+
+
 # TfL's own ids for the National Rail operators, which TfL does carry line status
 # for. Keeping to TfL's ids means the status call in board.py is the same one for
 # every board. The compass is what the two columns are called: on the Great
@@ -35,8 +40,9 @@ DEFAULT_URL = "https://api1.raildata.org.uk/1010-live-departure-board-dep/LDBWS/
 LINES = {
     "great-northern": {"name": "Great Northern", "colour": (99, 41, 107),
                        "inbound": "Southbound", "outbound": "Northbound"},
-    "thameslink": {"name": "Thameslink", "colour": (233, 67, 141),
-                   "inbound": "Southbound", "outbound": "Northbound"},
+    # No Thameslink: it runs through London, so "a train to a London terminus is
+    # inbound" cannot name its directions. At Finsbury Park a Horsham train is
+    # heading into town and that rule would have called it northbound.
     "southern": {"name": "Southern", "colour": (140, 198, 62),
                  "inbound": "Northbound", "outbound": "Southbound"},
     "southeastern": {"name": "Southeastern", "colour": (0, 175, 230),
@@ -57,7 +63,8 @@ LINES = {
 # list only has to be right for the London end of each line above.
 LONDON_TERMINI = {
     "moorgate", "london kings cross", "london king's cross", "london st pancras",
-    "london st pancras international", "london euston", "london liverpool street",
+    "london st pancras international", "london st pancras (intl)", "london st pancras intl",
+    "london euston", "london liverpool street",
     "london bridge", "london victoria", "london waterloo", "london charing cross",
     "london cannon street", "london fenchurch street", "london marylebone",
     "london paddington", "london blackfriars", "city thameslink", "farringdon",
@@ -74,10 +81,11 @@ def url_for(base, crs, rows=15):
 def fetch(crs, key, base=None, rows=15, timeout=10):
     """One board, as the feed sends it. Raises on anything but a 200 with JSON."""
     if not key:
-        raise ValueError("no rail_api_key: get one at raildata.org.uk (Live Departure Board)")
+        raise KeyProblem("no rail key: get one free at raildata.org.uk (Live Departure Board), "
+                         "then sudo python3 portal.py --rail-key YOURKEY")
     r = requests.get(url_for(base, crs, rows), headers={"x-apikey": key}, timeout=timeout)
     if r.status_code in (401, 403):
-        raise ValueError(f"the rail feed refused the key (HTTP {r.status_code})")
+        raise KeyProblem(f"the rail feed refused the key (HTTP {r.status_code})")
     r.raise_for_status()
     board = r.json()
     if not isinstance(board, dict):
@@ -127,9 +135,24 @@ def _destinations(service):
     out = []
     for d in _get(service, "destination", default=[]) or []:
         name = (_get(d, "locationName") or "").strip()
+        # the feed's via is display text and already starts with the word, "via
+        # Hertford North". Keep the place; the row adds the word back.
+        via = re.sub(r"^\s*via\s+", "", (_get(d, "via") or "").strip(), flags=re.I)
         if name:
-            out.append((name, (_get(d, "via") or "").strip()))
+            out.append((name, via))
     return out
+
+
+def feed_time(board):
+    """The feed's own clock as local wall time, or None. The Pi has no clock battery:
+    for the first moments after a power cut its clock is whatever was saved at the
+    last shutdown, and a board measured against that would read "182 min" until NTP
+    steps it. The feed knows what time it is; the Pi only thinks it does."""
+    try:
+        t = dt.datetime.fromisoformat(str(_get(board, "generatedAt") or ""))
+    except ValueError:
+        return None
+    return t.astimezone().replace(tzinfo=None) if t.tzinfo else t
 
 
 def predictions(board, now, line):
@@ -142,16 +165,20 @@ def predictions(board, now, line):
     out: a cancelled train is not one anyone can catch, and the status line is where
     disruption belongs. A delayed train with no estimate keeps its timetable time."""
     tab = LINES.get(line, {})
+    now = feed_time(board) or now
     out = []
     for s in _get(board, "trainServices", default=[]) or []:
         if _get(s, "isCancelled", default=False) or (_get(s, "etd") or "").strip().lower() == "cancelled":
             continue
         std, etd = _get(s, "std") or "", _get(s, "etd") or ""
+        delayed = etd.strip().lower() == "delayed"
         when = _hhmm(etd) or _hhmm(std)
         secs = secs_until(when, now)
-        # a train that left more than two minutes ago is still on the feed for a
-        # moment; drawn, it would sit at "due" under a train that has gone
-        if secs is None or secs < -120:
+        # A train that left more than two minutes ago is still on the feed for a
+        # moment; drawn, it would sit at "due" under a train that has gone. A train
+        # the feed calls "Delayed" with no estimate has not left: its timetable time
+        # passing is the delay, so it stays, and the row says "delayed", not "due".
+        if secs is None or (secs < -120 and not delayed):
             continue
         dests = _destinations(s)
         if not dests:
@@ -172,9 +199,9 @@ def predictions(board, now, line):
             "destinationName": dest,
             "towards": dest + (f" via {via}" if via else ""),
             "timeToStation": max(0, secs),
-            # kept for --explain and for anyone reading the journal; nothing draws them
-            "rail": {"std": std, "etd": etd,
-                     "delayed": etd.strip().lower() == "delayed",
+            "rail": {"std": std, "etd": etd, "delayed": delayed,
+                     # past its timetable time with no estimate: there are no minutes to show
+                     "overdue": delayed and secs < 0,
                      "operator": _get(s, "operator") or ""},
         })
     out.sort(key=lambda a: a["timeToStation"])
@@ -206,7 +233,8 @@ def explain(board, now, line, out=print):
     preds = predictions(board, now, line)
     out(f"{len(preds)} of those become predictions:")
     for a in preds:
-        out(f"  {a['timeToStation'] // 60:3d} min  {a['platformName']:<24}  {a['towards']}")
+        mins = "delayed" if a["rail"]["overdue"] else f"{a['timeToStation'] // 60:3d} min"
+        out(f"  {mins:>7}  {a['platformName']:<24}  {a['towards']}")
     for m in messages(board):
         out("  notice: " + m[:160])
 

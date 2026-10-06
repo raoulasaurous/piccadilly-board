@@ -127,17 +127,24 @@ board.requests = stub(board_get)
 
 # The National Rail feed, as the Rail Data Marketplace sends it, for Drayton Park.
 RAIL_BOARD = {
-    "locationName": "Drayton Park", "crs": "DYP", "generatedAt": "2026-10-07T08:10:02",
+    "locationName": "Drayton Park", "crs": "DYP", "generatedAt": "2026-10-07T08:10:00",
     "nrccMessages": [{"xhtmlMessage": "<p>Lifts at Highbury are out of order.</p>"}],
     "trainServices": [
         {"std": "08:12", "etd": "On time", "platform": "2", "operator": "Great Northern",
          "serviceID": "a1", "destination": [{"locationName": "Moorgate", "crs": "MOG"}]},
+        # a second service to Moorgate expected the same minute: two trains, not one
+        {"std": "08:11", "etd": "08:12", "platform": "2", "operator": "Great Northern",
+         "serviceID": "a0", "destination": [{"locationName": "Moorgate", "crs": "MOG"}]},
         {"std": "08:14", "etd": "08:17", "platform": "1", "operator": "Great Northern",
          "serviceID": "b2", "destination": [{"locationName": "Welwyn Garden City", "crs": "WGC"}]},
         {"std": "08:20", "etd": "Cancelled", "platform": "1", "isCancelled": True,
          "serviceID": "c3", "destination": [{"locationName": "Hertford North", "crs": "HFN"}]},
+        # "Delayed" with no estimate, and its timetable time has gone: still a train
+        {"std": "08:05", "etd": "Delayed", "platform": "1", "serviceID": "e5",
+         "destination": [{"locationName": "Hertford North", "crs": "HFN"}]},
+        # the feed's via text already carries the word
         {"std": "08:22", "etd": "Delayed", "platform": "1", "serviceID": "d4",
-         "destination": [{"locationName": "Stevenage", "crs": "SVG", "via": "Hertford North"}]},
+         "destination": [{"locationName": "Stevenage", "crs": "SVG", "via": "via Hertford North"}]},
     ]}
 rail_calls = []
 
@@ -207,6 +214,16 @@ def test_views():
     check("a number or a bool where the list should be gives one board",
           len(v5) == 1 and len(vt) == 1 and v5[0]["station_name"] == "Arsenal")
     check("and says so in the journal", "not a list" in err.getvalue())
+    check("rows is coerced and clamped: a quoted number, a zero, a hundred",
+          (views_for({"rows": "5"})[0]["rows"], views_for({"rows": 0})[0]["rows"],
+           views_for({"rows": 99})[0]["rows"], views_for({"rows": "lots"})[0]["rows"]) == (5, 1, 8, 5))
+    with open(board.SETTINGS_PATH, "w") as f:
+        f.write("[1, 2, 3]")
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        st = board.Settings()
+    check("a file that is a list, not an object, keeps the defaults and says so",
+          st["station_name"] == "Arsenal" and "not an object" in err.getvalue(), err.getvalue())
 
 
 def test_rail_board():
@@ -232,9 +249,11 @@ def test_rail_board():
           [c["label"] for c in cols] == ["SOUTHBOUND", "NORTHBOUND"], [c["label"] for c in cols])
     check("the southbound column says where it goes",
           cols[0]["towards"] == "Moorgate" and cols[0]["rows"][0] == ("Moorgate", 120), cols[0])
-    check("the cancelled train is not drawn, the delayed one keeps its time",
-          [r[0] for r in cols[1]["rows"]] == ["Welwyn Garden City", "Stevenage via Hertford North"],
-          cols[1]["rows"])
+    check("two services to Moorgate in the same minute are two rows", len(cols[0]["rows"]) == 2, cols[0]["rows"])
+    check("the cancelled train is not drawn; the overdue one says delayed; via is not doubled",
+          cols[1]["rows"] == [("Hertford North", None), ("Welwyn Garden City", 420),
+                              ("Stevenage via Hertford North", 720)], cols[1]["rows"])
+    check("a row with no minutes is drawn as delayed", board.label_mins(None) == "delayed")
     check("the status line is TfL's for the operator",
           status == "Good Service" and ok and any("/Line/great-northern/Status" in u for u in board_calls))
     at = dt.datetime(2026, 10, 7, 8, 10)
@@ -258,6 +277,40 @@ def test_rail_board():
         check("a refused key says so", False)
     except Exception as e:                      # noqa: BLE001
         check("a refused key says so", "refused the key" in str(e), e)
+
+    # on the screen a missing or refused key is named as such, not as the feed being down
+    network.update(state="CONNECTED", ssid="HomeNet", probe=204, asked=0)
+    diags.clear()
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        run_loop({"stations": [RAIL_STATION], "rail_api_key": "wrong"}, frames=8)
+    check("a refused key is the diagnosis, and the network is not blamed",
+          any(d and d[0] == "Rail key needed" for d, _ in diags) and network["asked"] == 0,
+          (diags[:3], network["asked"]))
+    # a feed that answers 404 for the stop says so too
+    def nope(url, params=None, timeout=None):
+        if "/Arrivals/" in url:
+            r = real_requests.Response(); r.status_code = 404; r.url = url + "?app_key=SECRET"
+            raise real_requests.exceptions.HTTPError("404 Client Error", response=r)
+        return board_get(url, params, timeout)
+    board.requests = stub(nope); diags.clear()
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            run_loop({}, frames=8)
+    finally:
+        board.requests = stub(board_get)
+    check("a 404 for the stop is named, and the key stays off the wall",
+          any(d and d[0].endswith("does not know this stop") and "SECRET" not in d[1] for d, _ in diags), diags[:3])
+    # an empty rail board at night still names its two columns
+    def empty_rail(url, params=None, headers=None, timeout=None):
+        r = Resp({"locationName": "Drayton Park", "crs": "DYP", "trainServices": None}); r.status_code = 200
+        return r
+    rail.requests = stub(empty_rail)
+    try:
+        cols = board.fetch(views_for({"stations": [RAIL_STATION], "rail_api_key": "k-test"})[0])[0]
+    finally:
+        rail.requests = stub(rail_get)
+    check("no trains at 02:00 still says SOUTHBOUND and NORTHBOUND, not DEPARTURES twice",
+          [c["label"] for c in cols] == ["SOUTHBOUND", "NORTHBOUND"], [c["label"] for c in cols])
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -367,7 +420,7 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
             raise SystemExit("enough")
         return "frame"
 
-    def spy_setup(W, H, state, ssid, hotspot, now, ss=2):
+    def spy_setup(W, H, state, ssid, hotspot, now, **kw):
         setup_frames.append((state, ssid, hotspot))
         shown.append(("(setup)", "(setup)", None, False, None, now))
         if on_frame:
@@ -393,7 +446,7 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
     if spy:
         board.render = spy_render           # --png needs the real one: it saves the frame
         board.render_setup = spy_setup
-    board.time = types.SimpleNamespace(time=lambda: fake_clock[0],
+    board.time = types.SimpleNamespace(time=lambda: fake_clock[0], monotonic=lambda: fake_clock[0],
                                        sleep=lambda s: fake_clock.__setitem__(0, fake_clock[0] + s))
     board.dt = types.SimpleNamespace(datetime=FakeDT, timedelta=dt.timedelta)
     # main() parses sys.argv; a flag meant for this test is not for it
@@ -499,8 +552,15 @@ def test_wifi():
           and V("CONNECTED", "HomeNet", 204, source="national-rail")[0] == "National Rail not answering")
     real_run = netdiag._run
     try:
+        one_shot = "Host tubeboard.local on comitup version 1.47\n'single' mode\n%s state\n"
+        netdiag._run = lambda args, timeout=5: {"comitup-cli": one_shot % "HOTSPOT"}.get(args[0], "")
+        check("comitup's one-shot word is taken first", netdiag.state() == ("HOTSPOT", ""))
+        netdiag._run = lambda args, timeout=5: {"comitup-cli": one_shot % "CONNECTING",
+                                                "nmcli": "Mums\\:House:802-11-wireless\n"}.get(args[0], "")
+        check("connecting, with the ssid from NetworkManager, unescaped",
+              netdiag.state() == ("CONNECTING", "Mums:House"), netdiag.state())
         netdiag._run = lambda args, timeout=5: {"comitup-cli": "State: HOTSPOT\nConnection: comitup-680\n"}.get(args[0], "")
-        check("comitup's word is taken first", netdiag.state() == ("HOTSPOT", ""))
+        check("and the interactive spelling still reads", netdiag.state() == ("HOTSPOT", ""))
         netdiag._run = lambda args, timeout=5: {"ip": "3: wlan0 inet 10.41.0.1/24 scope global wlan0"}.get(args[0], "")
         check("the hotspot address alone means HOTSPOT", netdiag.state() == ("HOTSPOT", ""))
         netdiag._run = lambda args, timeout=5: {"nmcli": "connected\n" if "general" in args else "HomeNet:802-11-wireless\n"}.get(args[0], "")
@@ -514,6 +574,10 @@ def test_wifi():
         f.write("# comment\nap_name: Jamies-Board\nweb_service: x\n")
     check("the hotspot name comes from comitup's config", netdiag.hotspot_name(conf) == "Jamies-Board")
     check("and has a default when there is none", netdiag.hotspot_name(os.path.join(TMP, "nope")) == "TubeBoard-setup")
+    check("no password unless comitup sets one", netdiag.hotspot_password(conf) == "")
+    with open(conf, "a") as f:
+        f.write("ap_password: letmein\n")
+    check("and the password when it does", netdiag.hotspot_password(conf) == "letmein")
 
     # the screen: no WiFi at boot shows the setup screen, not "Starting up" for ever
     network.update(state="HOTSPOT", ssid="", probe=None, asked=0)
@@ -576,6 +640,8 @@ def test_wifi():
     img.save(os.path.join(TMP, "setup.png"))
     img2 = board.render_setup(1920, 1080, "CONNECTING", "HomeNet", "TubeBoard-setup", at)
     check("and the joining screen", img2.size == (1920, 1080) and img2.tobytes() != img.tobytes())
+    img3 = board.render_setup(1920, 1080, "HOTSPOT", "", "TubeBoard-setup", at, password="letmein")
+    check("a hotspot with a password draws differently", img3.tobytes() != img.tobytes())
     saved_qr = board.qrcode
     try:
         board.qrcode = None
@@ -800,6 +866,22 @@ def test_shell():
           "--line must be one of" in refused(portal.cli_add_rail, "DYP", "victoria"))
     check("--line alone is refused for rail too", "goes with" in main_with("--line", "great-northern"))
 
+    write_portal(dict(BASE, stations=[dict(BASE), {"line": "victoria", "station_id": "940GZZLUHAI", "station_name": "H&I"}]))
+    check("the page says 30 s each when the file does not say, as the board does",
+          "30 s each" in portal.home() and "2 boards, 30 s each" in quiet(portal.cli_list))
+    write_portal(dict(BASE, stations=[dict(BASE, columns=[{"direction": "inbound", "label": "To town", "towards": ""},
+                                                             {"direction": "outbound", "label": "Away", "towards": ""}]),
+                                       {"line": "victoria", "station_id": "940GZZLUHAI", "station_name": "H&I"}]))
+    quiet(portal.cli_rotate, 40)
+    check("a hand-set per-station columns survives a save",
+          portal.load()["stations"][0].get("columns", [{}])[0].get("label") == "To town")
+    with open(portal.SETTINGS_PATH, "w") as f:
+        f.write('{"line": "piccadilly", "station_id": "940GZZLUASL",}')
+    check("a broken file is refused from the shell, in one line",
+          "not valid JSON" in main_with("--list-stations") and "not valid JSON" in main_with("--rotate", "30"))
+    with open(portal.SETTINGS_PATH) as f:
+        check("and nothing was written over it", f.read().endswith(",}"))
+
     # a file edited by hand: no name on an entry, or a number where the list goes
     write_portal(dict(BASE, stations=[dict(BASE), {"line": "victoria", "station_id": "940GZZLUHAI"}]))
     check("--list-stations copes with an entry that has no name",
@@ -899,28 +981,50 @@ def test_page():
               and s["stations"][1]["station_name"] == "Drayton Park", s)
         code, page = req("POST", "/save-rail", "crs=dy&line=great-northern")
         check("a bad code from the page is refused", "three letters" in page)
+        # the key, typed later for a station that is already there, is kept and the
+        # station gets its name
+        write_portal(dict(BASE, stations=[dict(BASE), {"source": "national-rail", "line": "great-northern",
+                                                        "station_id": "DYP", "station_name": "DYP"}]))
+        code, page = req("POST", "/save-rail", "crs=DYP&line=great-northern&rail_api_key=k-test")
+        s = portal.load()
+        check("a key typed for a station already on the rotation is saved, and names it",
+              code in (200, 303) and s.get("rail_api_key") == "k-test"
+              and s["stations"][1]["station_name"] == "Drayton Park" and len(s["stations"]) == 2, s)
+        code, page = req("POST", "/save-rail", "crs=DYP&line=great-northern&rail_api_key=k-test")
+        check("and the same again is the duplicate it is", "already on the rotation" in page)
         code, page = req("GET", "/")
         check("the list says which board is National Rail", "(National Rail)" in page)
+
+        with open(portal.SETTINGS_PATH, "w") as f:
+            f.write("{broken")
+        code, page = req("GET", "/")
+        check("a broken file is a readable error page, not a form that would overwrite it",
+              code == 500 and "not valid JSON" in page, (code, page[-200:]))
     finally:
         srv.shutdown()
 
 
 def test_forget_wifi():
     print("\nforgetting the WiFi")
+    write_portal(dict(BASE))            # the page test leaves its file deliberately broken
     calls = []
     saved_nm, saved_hs = portal._nm, portal.hotspot_name
 
     def fake_nm(args, timeout=15):
         calls.append(args)
         if args[:2] == ["-t", "-f"]:
+            # what nmcli -t prints: comitup's hotspot connection is "<ap_name>-0000", and
+            # a colon inside a name comes escaped
             return ("11-11:802-11-wireless:HomeNet\n22-22:ethernet:Wired connection 1\n"
-                    "33-33:802-11-wireless:TubeBoard-setup\n44-44:802-11-wireless:comitup-680\n"
-                    "55-55:802-11-wireless:Mums:House\n")
+                    "33-33:802-11-wireless:TubeBoard-setup-0000\n44-44:802-11-wireless:comitup-680\n"
+                    "55-55:802-11-wireless:Mums\\:House\n66-66:802-11-wireless:Renamed-hotspot\n")
+        if args[0] == "-g":
+            return "ap\n" if "33-33" in args or "66-66" in args else "infrastructure\n"
         return ""
     portal._nm, portal.hotspot_name = fake_nm, lambda: "TubeBoard-setup"
     try:
         nets = portal.wifi_connections()
-        check("saved WiFi is listed, wired and the hotspot left out",
+        check("saved WiFi is listed; wired, comitup's hotspot and any access point left out",
               [n for _, n in nets] == ["HomeNet", "Mums:House"], nets)
         gone = portal.forget_wifi()
         deletes = [c for c in calls if c[:3] == ["connection", "delete", "uuid"]]

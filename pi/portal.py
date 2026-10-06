@@ -63,6 +63,9 @@ TUBE_LINES = {
     "suffragette": "Suffragette", "weaver": "Weaver", "windrush": "Windrush",
 }
 LIMIT = 25  # search results shown; the loop and the "showing the first N" notice share it
+# board.py's default. The live file can predate the key, and the page must not say a
+# number the screen is not using, nor write one by letting Save go through unchanged.
+ROTATE_DEFAULT = 30
 # The National Rail operators, for the boards TfL's feed does not carry.
 RAIL_LINES = rail.LINES if rail else {}
 
@@ -96,9 +99,17 @@ input[type=checkbox]{{width:18px;height:18px;vertical-align:-3px;margin-right:8p
 def load():
     try:
         with open(SETTINGS_PATH) as f:
-            return json.load(f)
-    except (OSError, ValueError):
+            d = json.load(f)
+    except FileNotFoundError:
         return {}
+    except ValueError as e:
+        # A hand edit broke the JSON. The board is still running on the settings it
+        # read before, so refuse, rather than let the next save replace the whole
+        # file with one form's keys and hand the board a file with no station in it.
+        raise RuntimeError(f"{SETTINGS_PATH} is not valid JSON ({e}). Fix it by hand first.")
+    if not isinstance(d, dict):
+        raise RuntimeError(f"{SETTINGS_PATH} is not a JSON object. Fix it by hand first.")
+    return d
 
 
 def save(d):
@@ -143,7 +154,9 @@ def rotation(s):
     # a hand-written entry may carry no name. The board shows the id, so do the same,
     # or this page answers 500 until the file is fixed, and the page is the fix.
     r = [{"source": x.get("source") or "tfl", "line": x["line"], "station_id": x["station_id"],
-          "station_name": x.get("station_name") or x["station_id"]}
+          "station_name": x.get("station_name") or x["station_id"],
+          # board.py reads per-station platform labels from here; only a hand edit sets them
+          **({"columns": x["columns"]} if isinstance(x.get("columns"), list) else {})}
          for x in stations if isinstance(x, dict) and x.get("line") and x.get("station_id")]
     if not r and s.get("line") and s.get("station_id"):
         r = [{"source": s.get("source") or "tfl", "line": s["line"], "station_id": s["station_id"],
@@ -159,7 +172,8 @@ def set_rotation(s, r):
     and they must never name a station that is not on the screen. One board means no
     rotation at all, which is the shape every install had before this."""
     r = [{"source": x.get("source") or "tfl", "line": x["line"], "station_id": x["station_id"],
-          "station_name": x.get("station_name") or x["station_id"]} for x in r]
+          "station_name": x.get("station_name") or x["station_id"],
+          **({"columns": x["columns"]} if isinstance(x.get("columns"), list) else {})} for x in r]
     if r:
         # the single-station keys point at a TfL board when there is one: an older
         # board.py reads only those, and only knows TfL's feed
@@ -206,14 +220,21 @@ def hotspot_name():
 
 def wifi_connections():
     """The WiFi networks the Pi has saved, as (uuid, name). comitup's own hotspot is
-    left out: deleting that would take away the way back in."""
+    left out: deleting that would take away the way back in, until a power cycle."""
     found = []
     for line in _nm(["-t", "-f", "UUID,TYPE,NAME", "connection", "show"]).splitlines():
         parts = line.split(":", 2)     # NAME last, because a name can hold a colon
-        if len(parts) == 3 and parts[1] == "802-11-wireless":
-            uuid, _, name = parts
-            if not name.lower().startswith("comitup") and name != hotspot_name():
-                found.append((uuid, name))
+        if len(parts) != 3 or parts[1] != "802-11-wireless":
+            continue
+        uuid, _, name = parts
+        name = re.sub(r"\\(.)", r"\1", name)   # nmcli -t writes ':' and '\' in a name as '\:' and '\\'
+        # comitup names its hotspot connection "<ap_name>-<hash>", not the ssid, and
+        # only recreates it when its service starts. An access point is never a
+        # network the Pi joined, so ask NetworkManager rather than guess from the name.
+        mode = _nm(["-g", "802-11-wireless.mode", "connection", "show", "uuid", uuid]).strip()
+        if mode == "ap" or name.lower().startswith("comitup") or name.startswith(hotspot_name()):
+            continue
+        found.append((uuid, name))
     return found
 
 
@@ -228,14 +249,14 @@ def forget_wifi():
     return gone
 
 
-def rail_station_name(crs, line, key):
+def rail_station_name(crs, line, key, base=None):
     """What the feed calls the station, and a warning if it could not be asked. With
     no key the code stands in for the name; the screen says what is missing."""
     if not rail:
         raise RuntimeError("rail.py is missing next to portal.py")
     if not key:
         return crs, "no key"
-    board = rail.fetch(crs, key)
+    board = rail.fetch(crs, key, base)
     return (rail._get(board, "locationName") or crs), ""
 
 
@@ -253,7 +274,7 @@ def home(msg=""):
     if len(shown) > 1:
         # naming them all is the only way to tell a rotation from a board that is
         # changing station on its own
-        head = (f'<span>Showing {len(shown)} boards, {esc(s.get("rotate_seconds",20))} s each</span>'
+        head = (f'<span>Showing {len(shown)} boards, {esc(s.get("rotate_seconds", ROTATE_DEFAULT))} s each</span>'
                 f'<br><b>{esc(", ".join(x["station_name"] for x in shown))}</b><br><span>')
     else:
         head = (f'<span>Showing</span><br><b>{esc(s.get("station_name","?"))}</b>'
@@ -289,7 +310,7 @@ def home(msg=""):
     if len(r) > 1:
         body += ('<form method="post" action="/rotate">'
                  '<label>Seconds on each board (5 to 300)</label>'
-                 f'<input type="text" name="rotate_seconds" value="{esc(s.get("rotate_seconds",20))}">'
+                 f'<input type="text" name="rotate_seconds" value="{esc(s.get("rotate_seconds", ROTATE_DEFAULT))}">'
                  '<button type="submit">Save</button></form>')
     if RAIL_LINES:
         opts = "".join(f'<option value="{esc(k)}"{" selected" if k == "great-northern" else ""}>'
@@ -511,6 +532,7 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
         except ValueError:
             n = 0
+        n = max(0, min(n, 1 << 16))   # a form here is a few hundred bytes; anything bigger is not from this page
         form = up.parse_qs(self.rfile.read(n).decode())
         g = lambda k, d="": form.get(k, [d])[0].strip()
         s = load()
@@ -579,21 +601,30 @@ class H(BaseHTTPRequestHandler):
             set_rotation(s, keep)
         elif self.path == "/save-rail":
             crs, line, key = g("crs").upper(), g("line"), g("rail_api_key")
+            new_key = bool(key) and key != (s.get("rail_api_key") or "")
             if key:
                 s["rail_api_key"] = key
             if not re.fullmatch(r"[A-Z]{3}", crs) or line not in RAIL_LINES:
                 return self._send('<div class="err">The station code is three letters, and the '
                                   'operator one from the list.</div>' + home())
             try:
-                name, _ = rail_station_name(crs, line, s.get("rail_api_key") or "")
+                name, _ = rail_station_name(crs, line, s.get("rail_api_key") or "", s.get("rail_api_url") or None)
             except Exception as e:
                 return self._send(f'<div class="err">The rail feed did not answer: {esc(e)}</div>' + home())
             r = rotation(s)
             if any(x["line"] == line and x["station_id"] == crs for x in r):
-                return self._send('<div class="err">That station is already on the rotation.</div>' + home())
-            if len(r) >= 8:
-                return self._send('<div class="err">Eight boards is the most. Remove one first.</div>' + home())
-            r.append({"source": "national-rail", "line": line, "station_id": crs, "station_name": name})
+                if not new_key:
+                    return self._send('<div class="err">That station is already on the rotation.</div>' + home())
+                # The station was there already: the key is what was being saved, and
+                # the feed has just accepted it. It also named the station, which an
+                # entry added without a key only knew by its code.
+                for x in r:
+                    if x["line"] == line and x["station_id"] == crs:
+                        x["station_name"] = name
+            else:
+                if len(r) >= 8:
+                    return self._send('<div class="err">Eight boards is the most. Remove one first.</div>' + home())
+                r.append({"source": "national-rail", "line": line, "station_id": crs, "station_name": name})
             set_rotation(s, r)
         elif self.path == "/forget-wifi":
             if g("confirm").strip().upper() != "FORGET":
@@ -604,7 +635,7 @@ class H(BaseHTTPRequestHandler):
             return self._send("", 303, "/?forgot=1")
         elif self.path == "/rotate":
             try:
-                s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", "20"))))
+                s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", str(ROTATE_DEFAULT)))))
             except ValueError:
                 return self._send('<div class="err">Seconds must be a number.</div>' + home())
         elif self.path == "/save-misc":
@@ -637,7 +668,7 @@ def cli_list():
     if len(r) < 2:
         print("One board, no rotation:")
     else:
-        print(f'{len(r)} boards, {s.get("rotate_seconds", 20)} s each:')
+        print(f'{len(r)} boards, {s.get("rotate_seconds", ROTATE_DEFAULT)} s each:')
     for i, x in enumerate(r, 1):
         rail_tag = " (National Rail)" if x.get("source") == "national-rail" else ""
         print(f'  {i}. {x["station_name"]}, {line_name(x["line"])} line{rail_tag}  [{x["station_id"]}]')
@@ -708,7 +739,7 @@ def cli_add_rail(crs, line):
     if line not in RAIL_LINES:
         raise SystemExit("--line must be one of: " + ", ".join(sorted(RAIL_LINES)))
     s = load()
-    name, warn = rail_station_name(crs, line, s.get("rail_api_key") or "")
+    name, warn = rail_station_name(crs, line, s.get("rail_api_key") or "", s.get("rail_api_url") or None)
     r = rotation(s)
     if any(x["line"] == line and x["station_id"] == crs for x in r):
         raise SystemExit(f"{name} on {line_name(line)} is already on the rotation.")
@@ -752,7 +783,7 @@ def cli_drop(n):
         raise SystemExit("That is the only board. Add another before dropping this one.")
     gone = r.pop(n - 1)
     save(set_rotation(s, r))
-    print(f'Dropped {gone["station_name"]}, {TUBE_LINES.get(gone["line"], gone["line"])} line.')
+    print(f'Dropped {gone["station_name"]}, {line_name(gone["line"])} line.')
     cli_list()
 
 
@@ -818,7 +849,8 @@ def main():
     except requests.RequestException as e:
         # the page says "TfL search failed"; a shell deserves one line too
         raise SystemExit(f"TfL did not answer: {e}")
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # rail.fetch's own words for a key the feed refused, and load()'s for a broken file
         raise SystemExit(str(e))
     except OSError as e:
         # the installer and the service write this file as root, so a shell

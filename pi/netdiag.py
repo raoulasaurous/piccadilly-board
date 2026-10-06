@@ -39,27 +39,33 @@ def _run(args, timeout=5):
         return ""
 
 
+def _active_ssid():
+    """The WiFi NetworkManager is on, or ''. TYPE is last and never holds a colon;
+    nmcli -t writes a colon inside a name as '\\:'."""
+    for line in _run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).splitlines():
+        name, _, typ = line.rpartition(":")
+        if typ == "802-11-wireless":
+            return re.sub(r"\\(.)", r"\1", name)
+    return ""
+
+
 def state():
     """(state, ssid). comitup knows best, because HOTSPOT and CONNECTING are its
     words; failing that, the hotspot address on an interface means HOTSPOT, and
     NetworkManager's own state covers the rest."""
     out = _run(["comitup-cli", "i"])
-    m = re.search(r"State:\s*([A-Za-z]+)", out)
-    if m and m.group(1).upper() in (HOTSPOT, CONNECTING, CONNECTED):
-        c = re.search(r"Connection:\s*(.+)", out)
-        ssid = c.group(1).strip() if c else ""
-        st = m.group(1).upper()
-        # comitup names its own hotspot as the connection while in HOTSPOT mode
-        return st, ("" if st == HOTSPOT else ssid)
+    # With an argument comitup-cli (1.30 on) runs one command and exits, and "i"
+    # prints "HOTSPOT state": no "State:" and no "Connection:" line, those belong to
+    # its interactive mode. Read either, and ask NetworkManager for the ssid.
+    m = re.search(r"State:\s*(HOTSPOT|CONNECTING|CONNECTED)\b|\b(HOTSPOT|CONNECTING|CONNECTED) state\b",
+                  out, re.I)
+    if m:
+        st = (m.group(1) or m.group(2)).upper()
+        return st, ("" if st == HOTSPOT else _active_ssid())
     if HOTSPOT_IP in _run(["ip", "-4", "-o", "addr"]):
         return HOTSPOT, ""
     nm = _run(["nmcli", "-t", "-f", "STATE", "general"]).strip().lower()
-    ssid = ""
-    for line in _run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).splitlines():
-        parts = line.split(":")
-        if len(parts) >= 2 and parts[1] == "802-11-wireless":
-            ssid = parts[0]
-            break
+    ssid = _active_ssid()
     if nm.startswith("connected"):
         return CONNECTED, ssid
     if nm.startswith("connecting"):
@@ -117,18 +123,29 @@ def diagnose(hotspot_name="TubeBoard-setup", source="tfl"):
     return verdict(st, ssid, pr, hotspot_name, source), st, ssid
 
 
-def hotspot_name(conf="/etc/comitup.conf", default="TubeBoard-setup"):
-    """What the setup hotspot is called, from comitup's own config, so the screen
-    never names a network the phone will not see."""
+def _conf_value(conf, key):
     try:
         with open(conf) as f:
             for line in f:
-                m = re.match(r"\s*ap_name\s*:\s*(\S+)", line)
+                m = re.match(r"\s*" + key + r"\s*:\s*(\S+)", line)
                 if m:
                     return m.group(1)
     except OSError:
         pass
-    return default
+    return ""
+
+
+def hotspot_name(conf="/etc/comitup.conf", default="TubeBoard-setup"):
+    """What the setup hotspot is called, from comitup's own config, so the screen
+    never names a network the phone will not see."""
+    return _conf_value(conf, "ap_name") or default
+
+
+def hotspot_password(conf="/etc/comitup.conf"):
+    """The hotspot's WPA password if comitup.conf sets one, else ''. Read from the
+    same file as the name, for the same reason: the screen must describe the
+    network the phone will actually meet."""
+    return _conf_value(conf, "ap_password")
 
 
 def address():

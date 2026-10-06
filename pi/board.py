@@ -156,8 +156,19 @@ class Settings:
         try:
             with open(SETTINGS_PATH) as f:
                 d = json.load(f)
+            if not isinstance(d, dict):
+                # a hand edit can leave a list or null here; json.load is happy with
+                # those and the merge below would not be, on a wall nobody can reach
+                raise ValueError("settings.json is not an object")
             merged = dict(DEFAULTS)
             merged.update({k: v for k, v in d.items() if v not in (None, "")})
+            # rows is read raw by fetch() and render(): a hand-edited "5" (quoted), 5.0
+            # or 0 is a TypeError in both or an empty board, and five failed draws is a
+            # restart loop. Coerce and clamp once, here, where every view inherits it.
+            try:
+                merged["rows"] = max(1, min(8, int(merged["rows"])))
+            except (TypeError, ValueError, OverflowError):
+                merged["rows"] = DEFAULTS["rows"]
             self.data = merged
             self.mtime = m
             return True
@@ -289,14 +300,17 @@ def dedupe(arrivals):
     for a in arrivals:
         k = a.get("destinationNaptanId") or a.get("destinationName", "")
         t = int(a.get("timeToStation", 0))
-        h, dirn = heading(a), a.get("direction") or ""
-        # a blank on either side is "not stated", which contradicts nothing
+        h, dirn, vid = heading(a), a.get("direction") or "", str(a.get("vehicleId") or "")
+        # A blank on either side is "not stated", which contradicts nothing. Two
+        # stated, different train ids are two trains: rail times are whole minutes,
+        # so two services to Moorgate both expected at 08:12 would otherwise be one row.
         if any(k == sk and abs(t - st) <= 5
                and not (h and sh and h != sh)
                and not (dirn and sd and dirn != sd)
-               for sk, st, sh, sd in seen):
+               and not (vid and sv and vid != sv)
+               for sk, st, sh, sd, sv in seen):
             continue
-        seen.append((k, t, h, dirn))
+        seen.append((k, t, h, dirn, vid))
         out.append(a)
     return out
 
@@ -499,6 +513,13 @@ def fetch(settings):
 
     groups = group(arrivals, settings["columns"])
     chains = [column_label(c, mine) for c, mine in groups]
+    # A rail board knows its compass words without a train to read them from, so at
+    # 02:00 its two empty columns say SOUTHBOUND and NORTHBOUND, not DEPARTURES twice.
+    # TfL boards have no such table: their platform words only come from the trains.
+    known = rail.LINES.get(settings["line"], {}) if rail and settings.get("source") == "national-rail" else {}
+    for i, (c, mine) in enumerate(groups):
+        if not mine and c and known.get(c.get("direction")):
+            chains[i] = [known[c["direction"]].upper()] + chains[i]
     labels = [ch[0] for ch in chains]
     for i, ch in enumerate(chains):
         # two columns under one heading tell the reader nothing: take the next step
@@ -511,7 +532,9 @@ def fetch(settings):
         towards = (c or {}).get("towards") or (next(iter(tows)) if len(tows) == 1 else "")
         if "TOWARDS" in label:
             towards = ""  # already in the heading
-        rows = [(row_text(a), int(a.get("timeToStation", 0))) for a in mine]
+        # a rail train past its timetable time with no estimate has no minutes to show
+        rows = [(row_text(a), None if (a.get("rail") or {}).get("overdue") else int(a.get("timeToStation", 0)))
+                for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
 
     # One direction running, and we can name the other one: keep the second column and
@@ -632,6 +655,8 @@ def text_w(d, s, f):
 
 
 def label_mins(secs):
+    if secs is None:
+        return "delayed"
     m = round(secs / 60)
     return "due" if m <= 0 else f"{m} min"
 
@@ -791,7 +816,11 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         fbold = font("bold", 1.9 * u)
         d.text((x, fy), diag[0], font=fbold, fill=ORANGE, anchor="lm")
         x2 = x + text_w(d, diag[0], fbold) + 0.8 * u
-        d.text((x2, fy), clip(d, "- " + diag[1], fs, right_edge - x2), font=fs, fill=DIM, anchor="lm")
+        # there is no last update to show before the first good fetch
+        why = diag[1] if updated else re.sub(r"\.?\s*Showing the last update", "", diag[1]).strip()
+        why = clip(d, "- " + why, fs, right_edge - x2) if why else ""
+        if why and why not in ("-...", "- ..."):
+            d.text((x2, fy), why, font=fs, fill=DIM, anchor="lm")
     elif not live and updated is None:
         # Cold boot: the Pi is up before the network is, so the first fetch always
         # fails. There is no last update to show, and saying there is reads as a
@@ -857,14 +886,21 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         for j, (dest, secs) in enumerate(rows):
             yc = rows_top + step * j + step / 2
             if j < len(rows) - 1:
-                d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=(0, 40, 140))
+                # the connector between dots, in a shade of the line: Piccadilly blue
+                # between Great Northern purple dots read as a mistake
+                d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=tuple(int(c * 0.75) for c in line_colour))
             rr = 0.62 * u
             d.ellipse([dot_x - rr, yc - rr, dot_x + rr, yc + rr], fill=line_colour if line != "northern" else WHITE)
             m = label_mins(secs)
             # the destination stops short of the minutes: "Hainault via Newbury Park"
             # and "Stevenage via Hertford North" both used to run into them
             room = (x0 + col_w) - text_w(d, m, fm) - 1.5 * u - (dot_x + 1.9 * u)
-            d.text((dot_x + 1.9 * u, yc), clip(d, dest, fd, room), font=fd, fill=WHITE, anchor="lm")
+            shown = clip(d, dest, fd, room)
+            if shown.endswith(" via..."):
+                # "Stevenage via..." says less than "Stevenage": lose the branch whole.
+                # "Edgware via Charing..." still names it, so that one stays as it is.
+                shown = clip(d, dest.split(" via ", 1)[0], fd, room)
+            d.text((dot_x + 1.9 * u, yc), shown, font=fd, fill=WHITE, anchor="lm")
             d.text((x0 + col_w, yc), m, font=fm, fill=ORANGE, anchor="rm")
     return img
 
@@ -885,7 +921,7 @@ def qr_image(data, size):
         return None
 
 
-def render_setup(W, H, state, ssid, hotspot, now, ss=2):
+def render_setup(W, H, state, ssid, hotspot, now, password="", ss=2):
     """The screen while the board has no WiFi: what to join, and what to open.
 
     One still screen, large, for someone holding a phone across the room. The
@@ -893,7 +929,7 @@ def render_setup(W, H, state, ssid, hotspot, now, ss=2):
     device gave them itself. "CONNECTING" is the moment after a successful join,
     so the person knows it took and can put the phone down."""
     if ss > 1:
-        return render_setup(W * ss, H * ss, state, ssid, hotspot, now, ss=1).reduce(ss)
+        return render_setup(W * ss, H * ss, state, ssid, hotspot, now, password=password, ss=1).reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -923,7 +959,8 @@ def render_setup(W, H, state, ssid, hotspot, now, ss=2):
     d.text((left, y), "JOIN WIFI:", font=font("bold", 5.0 * u), fill=ORANGE)
     d.text((left, y + 6.5 * u), clip(d, hotspot, font("bold", 6.2 * u), text_room),
            font=font("bold", 6.2 * u), fill=WHITE)
-    steps = ["1. On a phone, join that WiFi network. No password.",
+    steps = [f"1. On a phone, join that WiFi network. Password: {password}" if password
+             else "1. On a phone, join that WiFi network. No password.",
              f"2. If no page opens by itself, open  http://{HOTSPOT_IP}",
              "3. Pick your own WiFi there and type its password.",
              "The board joins it and the trains come up."]
@@ -933,7 +970,11 @@ def render_setup(W, H, state, ssid, hotspot, now, ss=2):
         d.text((left, yy), clip(d, line, f_step, text_room), font=f_step, fill=DIM)
         yy += 3.3 * u
     # the QR carries the join details; a phone camera reads it and offers to join
-    qr = qr_image(f"WIFI:T:nopass;S:{hotspot};;", qr_side)
+    # the join details a phone camera reads; ; , : \ and " are special in this format
+    esc = lambda t: re.sub(r'([\\;,:"])', r"\\\1", t)             # noqa: E731
+    wifi = (f"WIFI:T:WPA;S:{esc(hotspot)};P:{esc(password)};;" if password
+            else f"WIFI:T:nopass;S:{esc(hotspot)};;")
+    qr = qr_image(wifi, qr_side)
     if qr is not None:
         qx, qy = int(W - pad - qr.width), int(rule_y + 4.5 * u)
         img.paste(qr, (qx, qy))
@@ -1031,7 +1072,8 @@ def main():
     if args.png and args.setup:
         W, H = (int(n) for n in args.size.split("x"))
         hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
-        render_setup(W, H, "HOTSPOT", "", hotspot, dt.datetime.now()).save(args.png)
+        password = netdiag.hotspot_password() if netdiag else ""
+        render_setup(W, H, "HOTSPOT", "", hotspot, dt.datetime.now(), password=password).save(args.png)
         print(f"wrote {args.png} (the setup screen)", flush=True)
         return
     if args.png:
@@ -1050,58 +1092,105 @@ def main():
         return
 
     fb = Framebuffer()
+
+    def nudge_screen(force):
+        # screen.py promises never to raise, but it reads brightness values that a
+        # hand-edited settings.json can hold as anything; that must not restart us
+        try:
+            for msg in screen.apply(settings.data, dt.datetime.now(), force=force):
+                print("screen:", msg, flush=True)
+        except Exception as e:                  # noqa: BLE001
+            print("screen control failed:", e, file=sys.stderr, flush=True)
+
     if screen:
         # Talk to the monitor once at startup so a restart re-asserts whatever the
         # schedule says, even if someone poked the buttons before it was framed.
-        for msg in screen.apply(settings.data, dt.datetime.now(), force=True):
-            print("screen:", msg, flush=True)
+        nudge_screen(True)
+    # Every interval runs on the monotonic clock. A Pi has no clock battery: at boot
+    # the wall clock is whatever was saved at the last shutdown, and NTP steps it
+    # forward by however long the Pi was off as soon as the WiFi is up, which on
+    # time.time() would end the address card's three minutes the moment it had a network.
+    boot = time.monotonic()
     last_screen = 0.0
     idx = 0
-    last_rotate = time.time()
-    # One entry per board, keyed by line and stop rather than by position, so
+    last_rotate = boot
+    # One entry per board, keyed by source, line and stop rather than by position, so
     # editing the rotation keeps the data for the stations that stayed in it.
     boards = {}
     draw_failures = 0
-    boot = time.time()
     hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
-    # What the network is doing, asked only after a fetch has failed and at most
-    # every 30 s: a board that is fine has nothing to diagnose.
-    net = {"state": "", "ssid": "", "diag": None, "checked": 0.0}
+    password = netdiag.hotspot_password() if netdiag else ""
+    # What the network is doing, asked only after a fetch has failed for a reason the
+    # fetch could not name itself, and at most every 30 s.
+    net = {"state": "", "ssid": "", "diag": None, "checked": 0.0, "said": None}
     addr = {"value": None, "checked": 0.0}
 
     def network_check(v):
-        if netdiag is None or time.time() - net["checked"] < 30:
+        if netdiag is None or time.monotonic() - net["checked"] < 30:
             return
-        net["checked"] = time.time()
+        net["checked"] = time.monotonic()
         try:
             diag, st, ssid = netdiag.diagnose(hotspot, v.get("source") or "tfl")
             net.update(state=st, ssid=ssid, diag=diag)
-            print(f"network: {st} {ssid or ''} - {diag[0]}", flush=True)
+            said = (st, ssid, diag[0])
+            if said != net["said"]:             # the journal gets changes, not a line every 30 s
+                net["said"] = said
+                print(f"network: {st} {ssid or ''} - {diag[0]}", flush=True)
         except Exception as e:                  # noqa: BLE001
             print("network check failed:", e, file=sys.stderr, flush=True)
+
+    def refusal(v, e):
+        """The feed answered, and the answer was no. That is this board's problem,
+        not the network's: it is said here, in the fetch's own words, and the
+        network is not asked. "Not answering" would have someone checking the
+        router when the fix is a key or a station id."""
+        feed = "National Rail" if v.get("source") == "national-rail" else "Transport for London"
+        if rail and isinstance(e, rail.KeyProblem):
+            return ("Rail key needed", str(e))
+        if isinstance(e, requests.exceptions.HTTPError):
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            # requests' own text carries the URL and with it the app key: not for the wall
+            if code == 404:
+                return (f"{feed} does not know this stop", f"HTTP 404 for {v['station_id']}. Check the station in the settings")
+            if code in (401, 403):
+                return (f"{feed} refused the request", f"HTTP {code}. Check the key in the settings")
+            if code == 429:
+                return (f"{feed} is rate limiting", "Too many requests from here. It clears in a minute")
+            if code is not None:
+                return (f"{feed} answered HTTP {code}", "Showing the last update")
+        return None
 
     def cached(v):
         return boards.setdefault(view_key(v), {
             "cols": [], "status": None, "status_ok": False, "status_why": "",
-            "updated": None, "live": False, "last_fetch": 0.0, "failures": 0})
+            "updated": None, "live": False, "last_fetch": 0.0, "failures": 0,
+            "diag": None, "said": None})
 
     def draw(v, b, rotation):
         """Put one board on the screen. Draw failures are counted here because the
-        loop now draws twice a refresh, and five in a row is still the give-up point."""
+        loop draws twice a refresh, and five in a row is still the give-up point."""
         nonlocal draw_failures
         try:
             now = dt.datetime.now()
-            if net["state"] in ("HOTSPOT", "CONNECTING") and not b["live"]:
-                # no WiFi to speak of: the screen's job is to get someone through setup
-                frame = render_setup(fb.w, fb.h, net["state"], net["ssid"], hotspot, now)
+            up = time.monotonic() - boot
+            # No WiFi to speak of: the screen's job is to get someone through setup.
+            # HOTSPOT waits a minute into the process, because comitup raises its
+            # hotspot first on every boot and only then joins the known network, and a
+            # passer-by should not read setup instructions after every power cut.
+            setup = net["state"] == "CONNECTING" or (net["state"] == "HOTSPOT" and up >= 60)
+            if setup and not b["live"]:
+                frame = render_setup(fb.w, fb.h, net["state"], net["ssid"], hotspot, now,
+                                     password=password)
             else:
-                if netdiag and time.time() - boot < 180 and time.time() - addr["checked"] >= 20:
-                    addr["checked"] = time.time()
+                if netdiag and up < 180 and time.monotonic() - addr["checked"] >= 20:
+                    addr["checked"] = time.monotonic()
                     addr["value"] = netdiag.address()  # the IP can arrive a while after boot
+                # this board's own refusal first, the network's verdict otherwise
+                diag = None if b["live"] else (b["diag"] or net["diag"])
                 frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
                                b["status_why"], now, b["updated"], b["live"],
-                               rotation=rotation, diag=net["diag"] if not b["live"] else None,
-                               address=addr["value"] if time.time() - boot < 180 else None)
+                               rotation=rotation, diag=diag,
+                               address=addr["value"] if up < 180 else None)
             fb.show(frame)
             draw_failures = 0
         except Exception as e:
@@ -1119,13 +1208,11 @@ def main():
             views = station_views(settings)
             if idx >= len(views):
                 idx = 0
-        t = time.time()
+        t = time.monotonic()
         # Nudge the screen every 30 s, and at once if the settings just changed.
         if screen and (changed_settings or t - last_screen >= 30):
             last_screen = t
-            for msg in screen.apply(settings.data, dt.datetime.now(),
-                                    force=changed_settings):
-                print("screen:", msg, flush=True)
+            nudge_screen(changed_settings)
         # settings.json can be edited by hand. A bad number in either of these must
         # not put the board in a restart loop on a wall nobody can reach. (json reads
         # Infinity, and int(inf) is an OverflowError, not a ValueError.)
@@ -1154,15 +1241,23 @@ def main():
             b["last_fetch"] = t
             try:
                 b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
-                b["updated"], b["live"], b["failures"] = dt.datetime.now(), True, 0
-                net.update(state="", diag=None)   # a good fetch is the whole diagnosis
+                b["updated"], b["live"], b["diag"] = dt.datetime.now(), True, None
+                if b["failures"]:
+                    print(f'fetch ok again ({v["station_name"]}, {v["line"]})', flush=True)
+                b["failures"], b["said"] = 0, None
+                net.update(state="", diag=None)   # a good fetch is the whole network diagnosis
             except Exception as e:
                 b["failures"] += 1
-                network_check(v)
                 # name the board: with a rotation, "fetch failed" alone does not say
-                # which station is the one that cannot be reached
-                print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,
-                      file=sys.stderr, flush=True)
+                # which station is the one that cannot be reached. The same failure
+                # every pass is one journal line, not a thousand a day.
+                if str(e) != b["said"]:
+                    b["said"] = str(e)
+                    print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,
+                          file=sys.stderr, flush=True)
+                b["diag"] = refusal(v, e)
+                if b["diag"] is None:
+                    network_check(v)
                 # Keep showing the last board, and after three minutes without a good
                 # fetch say so. Measured in time, not in failures: a board is only
                 # fetched while it is on screen, so counting failures would wait three
@@ -1175,13 +1270,12 @@ def main():
         # Redraw every 10 s. The clock only needs a minute, but the "updated Xs
         # ago" line has to keep up or it is quietly lying, and a frame costs
         # about a third of a second on a Pi 3. With a rotation, wake for the
-        # switch too, or a 20 s rotation drifts by up to ten.
+        # switch too, or a 30 s rotation drifts by up to ten.
         waits = [10.0, 60.0 - dt.datetime.now().second,
-                 refresh_s - (time.time() - b["last_fetch"])]
+                 refresh_s - (time.monotonic() - b["last_fetch"])]
         if len(views) > 1:
-            waits.append(rotate_s - (time.time() - last_rotate))
+            waits.append(rotate_s - (time.monotonic() - last_rotate))
         time.sleep(max(1.0, min(waits)))
-
 
 if __name__ == "__main__":
     main()

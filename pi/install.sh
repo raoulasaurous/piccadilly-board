@@ -87,10 +87,11 @@ else
   echo "         power cut will leave the board zoomed in."
 fi
 
-# Compare only now, after the EDID line is in: every edit above appends its token
-# at the end, so a comparison made before the last one sees a reordered line on
-# every re-run and asks for a reboot that changes nothing.
-[ "$(cat "$CMD")" = "$CMD_WAS" ] || NEED_REBOOT=yes
+# Compare only now, after the EDID line is in, and compare the set of tokens, not
+# the line: every edit above strips its token and appends it at the end, so the
+# order changes on a re-run while the kernel sees the same options.
+tokens() { tr ' ' '\n' <<< "$1" | sort; }
+[ "$(tokens "$(cat "$CMD")")" = "$(tokens "$CMD_WAS")" ] || NEED_REBOOT=yes
 
 CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
 grep -q '^hdmi_force_hotplug' "$CFG" || {
