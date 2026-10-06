@@ -33,6 +33,17 @@ try:
 except Exception as e:                          # noqa: BLE001
     rail = None
     print("National Rail boards unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import netdiag                              # why there are no trains, in words
+except Exception as e:                          # noqa: BLE001
+    netdiag = None
+    print("network diagnosis unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import qrcode                               # the setup screen's "scan to join"
+except Exception:                               # noqa: BLE001
+    qrcode = None
+
+HOTSPOT_IP = "10.41.0.1"                        # where comitup's own page answers
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
@@ -648,7 +659,8 @@ def clip(d, text, fnt, room):
         return text
     while text and d.textlength(text + "...", font=fnt) > room:
         text = text[:-1].rstrip() if " " not in text else text.rsplit(" ", 1)[0]
-    return (text + "...") if text else ""
+    # a clause that already ends in a full stop would otherwise show four dots
+    return (text.rstrip(".") + "...") if text else ""
 
 
 def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
@@ -682,7 +694,7 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           rotation=None, ss=2):
+           rotation=None, diag=None, address=None, ss=2):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -690,7 +702,8 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     ss=1 skips it, for a slow machine."""
     if ss > 1:
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
-                     status_why, now, updated, live, rotation=rotation, ss=1)
+                     status_why, now, updated, live, rotation=rotation, diag=diag,
+                     address=address, ss=1)
         return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -748,7 +761,15 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # the left, when we last heard from TfL on the right. From a sofa the eye
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
-    upd = "Updated " + ago(updated, now)
+    if address and (address[0] or address[1]):
+        # For the first minutes after a boot this corner carries the board's own
+        # address instead of the update age. The settings page is findable only by
+        # someone who knows where to look, and this is the one moment they are looking.
+        host, ip = address
+        upd = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
+                                                     f"http://{ip}:8080" if ip else "") if x)
+    else:
+        upd = "Updated " + ago(updated, now)
     fupd = font("regular", 1.35 * u)
     d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
     # Everything on the left of this line has to stop before the timestamp.
@@ -756,11 +777,19 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
-    if not live and updated is None:
+    feed = "National Rail" if settings.get("source") == "national-rail" else "Transport for London"
+    if not live and diag and diag[0]:
+        # The network check knows which failure this is. Say that, in the words a
+        # person in the room can act on, rather than "no data".
+        fbold = font("bold", 1.9 * u)
+        d.text((x, fy), diag[0], font=fbold, fill=ORANGE, anchor="lm")
+        x2 = x + text_w(d, diag[0], fbold) + 0.8 * u
+        d.text((x2, fy), clip(d, "- " + diag[1], fs, right_edge - x2), font=fs, fill=DIM, anchor="lm")
+    elif not live and updated is None:
         # Cold boot: the Pi is up before the network is, so the first fetch always
         # fails. There is no last update to show, and saying there is reads as a
         # fault to anyone walking past. Say what is actually happening instead.
-        d.text((x, fy), clip(d, "Starting up, waiting for Transport for London", fs, right_edge - x), font=fs, fill=DIM, anchor="lm")
+        d.text((x, fy), clip(d, f"Starting up, waiting for {feed}", fs, right_edge - x), font=fs, fill=DIM, anchor="lm")
     elif not live:
         d.text((x, fy), clip(d, "No live data, showing the last update", fs, right_edge - x), font=fs, fill=ORANGE, anchor="lm")
     elif not status_ok:
@@ -824,9 +853,85 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
                 d.rectangle([dot_x - 1, yc, dot_x + 1, yc + step], fill=(0, 40, 140))
             rr = 0.62 * u
             d.ellipse([dot_x - rr, yc - rr, dot_x + rr, yc + rr], fill=line_colour if line != "northern" else WHITE)
-            d.text((dot_x + 1.9 * u, yc), dest, font=fd, fill=WHITE, anchor="lm")
             m = label_mins(secs)
+            # the destination stops short of the minutes: "Hainault via Newbury Park"
+            # and "Stevenage via Hertford North" both used to run into them
+            room = (x0 + col_w) - text_w(d, m, fm) - 1.5 * u - (dot_x + 1.9 * u)
+            d.text((dot_x + 1.9 * u, yc), clip(d, dest, fd, room), font=fd, fill=WHITE, anchor="lm")
             d.text((x0 + col_w, yc), m, font=fm, fill=ORANGE, anchor="rm")
+    return img
+
+
+def qr_image(data, size):
+    """A QR code, dark on light, `size` pixels square. None without the library.
+    Dark on light on purpose: phone cameras read an inverted code badly or not at all."""
+    if qrcode is None:
+        return None
+    try:
+        q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        q.add_data(data)
+        q.make(fit=True)
+        im = q.make_image().convert("RGB")
+        return im.resize((int(size), int(size)), Image.NEAREST)
+    except Exception as e:                      # noqa: BLE001
+        print("qr failed:", e, file=sys.stderr, flush=True)
+        return None
+
+
+def render_setup(W, H, state, ssid, hotspot, now, ss=2):
+    """The screen while the board has no WiFi: what to join, and what to open.
+
+    One still screen, large, for someone holding a phone across the room. The
+    ticker taught this: setup worked first time with no instructions once the
+    device gave them itself. "CONNECTING" is the moment after a successful join,
+    so the person knows it took and can put the phone down."""
+    if ss > 1:
+        return render_setup(W * ss, H * ss, state, ssid, hotspot, now, ss=1).reduce(ss)
+    u = W / 100.0
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    pad = 2.5 * u
+    blue = LINE_COLOURS["piccadilly"]
+    r = 3.6 * u
+    cx, cy = pad + r * 1.05, pad + 3.1 * u
+    paste_roundel(img, cx, cy, r, blue, label="UNDERGROUND")
+    tx = cx + r * 1.05 + 1.4 * u
+    d.text((tx, pad + 0.4 * u), "TUBE BOARD", font=font("regular", 3.2 * u), fill=WHITE)
+    d.text((tx, pad + 3.9 * u), "Setting up", font=font("light", 2.0 * u), fill=DIM)
+    d.text((W - pad, cy), now.strftime("%H:%M"), font=font("light", 5.4 * u), fill=WHITE, anchor="rm")
+    rule_y = pad + 7.3 * u
+    d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=blue)
+
+    left, y = pad, rule_y + 6.0 * u
+    qr_side = 26 * u
+    text_room = W - pad - qr_side - 4 * u - left
+    if state == "CONNECTING":
+        d.text((left, y), "WIFI OK", font=font("bold", 7.0 * u), fill=GREEN)
+        who = f"Connecting to {ssid}" if ssid else "Connecting to the WiFi"
+        d.text((left, y + 10 * u), clip(d, who, font("regular", 3.4 * u), W - 2 * pad),
+               font=font("regular", 3.4 * u), fill=WHITE)
+        d.text((left, y + 15 * u), "The trains will be up in a moment.",
+               font=font("light", 2.4 * u), fill=DIM)
+        return img
+    d.text((left, y), "JOIN WIFI:", font=font("bold", 5.0 * u), fill=ORANGE)
+    d.text((left, y + 6.5 * u), clip(d, hotspot, font("bold", 6.2 * u), text_room),
+           font=font("bold", 6.2 * u), fill=WHITE)
+    steps = ["1. On a phone, join that WiFi network. No password.",
+             f"2. If no page opens by itself, open  http://{HOTSPOT_IP}",
+             "3. Pick your own WiFi there and type its password.",
+             "The board joins it and the trains come up."]
+    yy = y + 16 * u
+    f_step = font("light", 2.3 * u)
+    for line in steps:
+        d.text((left, yy), clip(d, line, f_step, text_room), font=f_step, fill=DIM)
+        yy += 3.3 * u
+    # the QR carries the join details; a phone camera reads it and offers to join
+    qr = qr_image(f"WIFI:T:nopass;S:{hotspot};;", qr_side)
+    if qr is not None:
+        qx, qy = int(W - pad - qr.width), int(rule_y + 4.5 * u)
+        img.paste(qr, (qx, qy))
+        d.text((qx + qr.width / 2, qy + qr.height + 1.8 * u), "Scan to join",
+               font=font("light", 2.0 * u), fill=DIM, anchor="mm")
     return img
 
 
@@ -897,6 +1002,8 @@ def main():
                          "into columns, then exit. Every board on the rotation, in turn")
     ap.add_argument("--view", type=int, default=1,
                     help="which board of the rotation --png draws (1 is the first)")
+    ap.add_argument("--setup", action="store_true",
+                    help="with --png: draw the WiFi setup screen instead of a board")
     args = ap.parse_args()
 
     settings = Settings()
@@ -913,6 +1020,12 @@ def main():
                 # a station TfL will not answer for is the usual reason to run this,
                 # so it must not hide the boards after it
                 print("could not explain this board:", e)
+        return
+    if args.png and args.setup:
+        W, H = (int(n) for n in args.size.split("x"))
+        hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
+        render_setup(W, H, "HOTSPOT", "", hotspot, dt.datetime.now()).save(args.png)
+        print(f"wrote {args.png} (the setup screen)", flush=True)
         return
     if args.png:
         i = max(0, min(len(views) - 1, args.view - 1))
@@ -942,6 +1055,23 @@ def main():
     # editing the rotation keeps the data for the stations that stayed in it.
     boards = {}
     draw_failures = 0
+    boot = time.time()
+    hotspot = netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
+    # What the network is doing, asked only after a fetch has failed and at most
+    # every 30 s: a board that is fine has nothing to diagnose.
+    net = {"state": "", "ssid": "", "diag": None, "checked": 0.0}
+    addr = {"value": None, "checked": 0.0}
+
+    def network_check(v):
+        if netdiag is None or time.time() - net["checked"] < 30:
+            return
+        net["checked"] = time.time()
+        try:
+            diag, st, ssid = netdiag.diagnose(hotspot, v.get("source") or "tfl")
+            net.update(state=st, ssid=ssid, diag=diag)
+            print(f"network: {st} {ssid or ''} - {diag[0]}", flush=True)
+        except Exception as e:                  # noqa: BLE001
+            print("network check failed:", e, file=sys.stderr, flush=True)
 
     def cached(v):
         return boards.setdefault(view_key(v), {
@@ -953,9 +1083,19 @@ def main():
         loop now draws twice a refresh, and five in a row is still the give-up point."""
         nonlocal draw_failures
         try:
-            fb.show(render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
-                           b["status_why"], dt.datetime.now(), b["updated"], b["live"],
-                           rotation=rotation))
+            now = dt.datetime.now()
+            if net["state"] in ("HOTSPOT", "CONNECTING") and not b["live"]:
+                # no WiFi to speak of: the screen's job is to get someone through setup
+                frame = render_setup(fb.w, fb.h, net["state"], net["ssid"], hotspot, now)
+            else:
+                if netdiag and time.time() - boot < 180 and time.time() - addr["checked"] >= 20:
+                    addr["checked"] = time.time()
+                    addr["value"] = netdiag.address()  # the IP can arrive a while after boot
+                frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
+                               b["status_why"], now, b["updated"], b["live"],
+                               rotation=rotation, diag=net["diag"] if not b["live"] else None,
+                               address=addr["value"] if time.time() - boot < 180 else None)
+            fb.show(frame)
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
@@ -1008,8 +1148,10 @@ def main():
             try:
                 b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
                 b["updated"], b["live"], b["failures"] = dt.datetime.now(), True, 0
+                net.update(state="", diag=None)   # a good fetch is the whole diagnosis
             except Exception as e:
                 b["failures"] += 1
+                network_check(v)
                 # name the board: with a rotation, "fetch failed" alone does not say
                 # which station is the one that cannot be reached
                 print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,

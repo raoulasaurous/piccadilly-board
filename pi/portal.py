@@ -18,6 +18,7 @@ this page is not reachable from yours (Raspberry Pi Connect gives that shell):
     sudo python3 portal.py --add-rail DYP --line great-northern
     sudo python3 portal.py --drop-station 2
     sudo python3 portal.py --rotate 30
+    sudo python3 portal.py --forget-wifi     # before the board goes to someone else
 
 The sudo is because the installer and the service write settings.json as root;
 reading it needs nothing. A National Rail station (one TfL's feed does not carry,
@@ -30,8 +31,10 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse as up
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -41,6 +44,10 @@ try:
     import rail                                 # National Rail departures, for stations TfL does not carry
 except Exception:                               # noqa: BLE001
     rail = None
+try:
+    import netdiag                              # knows the setup hotspot's name
+except Exception:                               # noqa: BLE001
+    netdiag = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
@@ -179,6 +186,48 @@ def stop_name(m):
     return (m.get("name") or "").replace(" Underground Station", "")
 
 
+def _nm(args, timeout=15):
+    """nmcli, or a RuntimeError with its own words. The portal runs as root, which
+    is what deleting a connection needs."""
+    try:
+        r = subprocess.run(["nmcli"] + args, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise RuntimeError("nmcli is not installed")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("nmcli did not answer")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "nmcli failed").strip())
+    return r.stdout
+
+
+def hotspot_name():
+    return netdiag.hotspot_name() if netdiag else "TubeBoard-setup"
+
+
+def wifi_connections():
+    """The WiFi networks the Pi has saved, as (uuid, name). comitup's own hotspot is
+    left out: deleting that would take away the way back in."""
+    found = []
+    for line in _nm(["-t", "-f", "UUID,TYPE,NAME", "connection", "show"]).splitlines():
+        parts = line.split(":", 2)     # NAME last, because a name can hold a colon
+        if len(parts) == 3 and parts[1] == "802-11-wireless":
+            uuid, _, name = parts
+            if not name.lower().startswith("comitup") and name != hotspot_name():
+                found.append((uuid, name))
+    return found
+
+
+def forget_wifi():
+    """Delete every saved WiFi network. comitup then has nothing to join and raises
+    the setup hotspot within a minute. The board carries on drawing throughout.
+    Returns the names forgotten."""
+    gone = []
+    for uuid, name in wifi_connections():
+        _nm(["connection", "delete", "uuid", uuid])
+        gone.append(name)
+    return gone
+
+
 def rail_station_name(crs, line, key):
     """What the feed calls the station, and a warning if it could not be asked. With
     no key the code stands in for the name; the screen says what is missing."""
@@ -256,6 +305,27 @@ def home(msg=""):
                  "<small>Stations TfL does not serve come from National Rail's own feed. "
                  'It needs a free key: an account at raildata.org.uk, subscribed to '
                  '"Live Departure Board". Saved once, it is kept.</small>')
+    try:
+        nets = wifi_connections()
+    except Exception as e:                      # noqa: BLE001
+        nets, net_err = [], str(e)
+    else:
+        net_err = ""
+    body += '<h2>WiFi</h2>'
+    if net_err:
+        body += f'<p><small>Could not list the saved networks: {esc(net_err)}</small></p>'
+    elif nets:
+        body += ('<p><small>Saved networks: ' + esc(", ".join(n for _, n in nets)) + '</small></p>'
+                 '<form method="post" action="/forget-wifi">'
+                 '<label>Type FORGET to forget them all</label>'
+                 '<input type="text" name="confirm" autocomplete="off">'
+                 '<button type="submit" class="btn alt">Forget the WiFi</button></form>'
+                 f'<small>Before the board goes to someone else: the Pi forgets every network it knows, '
+                 f'and within a minute the screen shows how to join <b>{esc(hotspot_name())}</b> '
+                 'and set up the new one. The board keeps drawing. This page stops answering '
+                 'until the Pi is on a network again.</small>')
+    else:
+        body += '<p><small>No WiFi network is saved.</small></p>'
     body += ('<h2>Show one station only</h2><form method="get" action="/search">'
              '<input type="text" name="q" placeholder="Station name, e.g. Arsenal">'
              '<button type="submit">Search</button></form>'
@@ -370,6 +440,14 @@ def has_arrivals(stop_id, line):
         return True  # a wobble at TfL must not stop the user changing station
 
 
+def _forget_later():
+    try:
+        gone = forget_wifi()
+        print("portal: forgot wifi:", ", ".join(gone) or "(none saved)", file=sys.stderr, flush=True)
+    except Exception as e:                      # noqa: BLE001
+        print("portal: forget wifi failed:", e, file=sys.stderr, flush=True)
+
+
 class H(BaseHTTPRequestHandler):
     timeout = 30  # a phone that opens a socket and says nothing must not park a thread
 
@@ -405,7 +483,13 @@ class H(BaseHTTPRequestHandler):
             u = up.urlsplit(self.path)
             qs = up.parse_qs(u.query)
             if u.path == "/":
-                self._send(home('<div class="ok">Saved. The board updates within a minute.</div>' if "saved" in qs else ""))
+                banner = ""
+                if "saved" in qs:
+                    banner = '<div class="ok">Saved. The board updates within a minute.</div>'
+                elif "forgot" in qs:
+                    banner = ('<div class="ok">Forgetting the WiFi. In about a minute the screen shows '
+                              f'the setup hotspot, {esc(hotspot_name())}.</div>')
+                self._send(home(banner))
             elif u.path == "/search":
                 self._send(search(qs.get("q", [""])[0].strip(), qs.get("add", [""])[0] == "1"))
             elif u.path == "/pick":
@@ -511,6 +595,13 @@ class H(BaseHTTPRequestHandler):
                 return self._send('<div class="err">Eight boards is the most. Remove one first.</div>' + home())
             r.append({"source": "national-rail", "line": line, "station_id": crs, "station_name": name})
             set_rotation(s, r)
+        elif self.path == "/forget-wifi":
+            if g("confirm").strip().upper() != "FORGET":
+                return self._send('<div class="err">Type FORGET in the box to forget the WiFi. '
+                                  'Nothing was changed.</div>' + home())
+            # answer first: the delete takes this very network away under the phone
+            threading.Timer(2.0, _forget_later).start()
+            return self._send("", 303, "/?forgot=1")
         elif self.path == "/rotate":
             try:
                 s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", "20"))))
@@ -640,6 +731,18 @@ def cli_rail_key(key):
     cli_list()
 
 
+def cli_forget_wifi():
+    nets = wifi_connections()
+    if not nets:
+        print("No WiFi network is saved.")
+        return
+    print("Forgetting: " + ", ".join(n for _, n in nets))
+    print(f"The screen will show the setup hotspot, {hotspot_name()}, within a minute.")
+    print("If you are on this Pi over the network, this is where you lose it.")
+    for name in forget_wifi():
+        print("  forgot " + name)
+
+
 def cli_drop(n):
     s = load()
     r = rotation(s)
@@ -676,6 +779,8 @@ def main():
                     help="remove board N, as numbered by --list-stations")
     ap.add_argument("--rotate", type=int, metavar="SECONDS",
                     help="how long each board holds the screen")
+    ap.add_argument("--forget-wifi", action="store_true",
+                    help="forget every saved WiFi network, so the setup hotspot comes up")
     a = ap.parse_args()
 
     # Every one of these edits settings.json and exits. The board picks the change up
@@ -704,12 +809,17 @@ def main():
         if a.rotate is not None:
             cli_rotate(a.rotate)
             did = True
+        if a.forget_wifi:
+            cli_forget_wifi()
+            did = True
         if a.list_stations and not did:
             cli_list()
             did = True
     except requests.RequestException as e:
         # the page says "TfL search failed"; a shell deserves one line too
         raise SystemExit(f"TfL did not answer: {e}")
+    except RuntimeError as e:
+        raise SystemExit(str(e))
     except OSError as e:
         # the installer and the service write this file as root, so a shell
         # without sudo can read it but not replace it

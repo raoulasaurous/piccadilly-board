@@ -36,6 +36,7 @@ TMP = tempfile.mkdtemp(prefix="tubeboard-test-")
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 import board                                                        # noqa: E402
+import netdiag                                                      # noqa: E402
 import portal                                                       # noqa: E402
 import rail                                                         # noqa: E402
 
@@ -316,10 +317,21 @@ class FakeDT(dt.datetime):
         return cls.fromtimestamp(fake_clock[0])
 
 
+network = {"state": "CONNECTED", "ssid": "HomeNet", "probe": 204, "asked": 0}
+setup_frames = []        # (state, ssid, hotspot) each time the setup screen was drawn
+diags = []               # the diag kwarg of each board frame
+
+
+def fake_diagnose(hotspot, source="tfl"):
+    network["asked"] += 1
+    v = netdiag.verdict(network["state"], network["ssid"], network["probe"], hotspot, source)
+    return v, network["state"], network["ssid"]
+
+
 def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
     """Run board.main() against a settings file, with a fake clock that sleep()
-    advances, a fake screen, and a spy in place of render. Returns the frames drawn
-    as (station, line, rotation, live, updated, now)."""
+    advances, a fake screen, a spy in place of render and a scripted network.
+    Returns the frames drawn as (station, line, rotation, live, updated, now)."""
     shown = []
 
     def spy_render(W, H, settings, *a, **kw):
@@ -327,6 +339,16 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
         # positional after settings: cols, status_text, status_ok, status_why, now, updated, live
         shown.append((settings["station_name"], settings["line"], kw.get("rotation"),
                       a[6], a[5], a[4]))
+        diags.append((kw.get("diag"), kw.get("address")))
+        if on_frame:
+            on_frame(len(shown))
+        if len(shown) >= frames:
+            raise SystemExit("enough")
+        return "frame"
+
+    def spy_setup(W, H, state, ssid, hotspot, now, ss=2):
+        setup_frames.append((state, ssid, hotspot))
+        shown.append(("(setup)", "(setup)", None, False, None, now))
         if on_frame:
             on_frame(len(shown))
         if len(shown) >= frames:
@@ -341,10 +363,15 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
 
     write_board(extra)
     fake_clock[0] = 1000.0
-    saved = (board.render, board.Framebuffer, board.screen, board.time, board.dt, sys.argv)
+    saved = (board.render, board.render_setup, board.Framebuffer, board.screen, board.time,
+             board.dt, sys.argv, netdiag.diagnose, netdiag.address, netdiag.hotspot_name)
     board.Framebuffer, board.screen = FakeFB, None
+    netdiag.diagnose = fake_diagnose
+    netdiag.address = lambda: ("tubeboard", "192.168.1.23")
+    netdiag.hotspot_name = lambda *a, **k: "TubeBoard-setup"
     if spy:
         board.render = spy_render           # --png needs the real one: it saves the frame
+        board.render_setup = spy_setup
     board.time = types.SimpleNamespace(time=lambda: fake_clock[0],
                                        sleep=lambda s: fake_clock.__setitem__(0, fake_clock[0] + s))
     board.dt = types.SimpleNamespace(datetime=FakeDT, timedelta=dt.timedelta)
@@ -355,7 +382,8 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
     except SystemExit:
         pass
     finally:
-        board.render, board.Framebuffer, board.screen, board.time, board.dt, sys.argv = saved
+        (board.render, board.render_setup, board.Framebuffer, board.screen, board.time,
+         board.dt, sys.argv, netdiag.diagnose, netdiag.address, netdiag.hotspot_name) = saved
     return shown
 
 
@@ -433,6 +461,126 @@ def test_outage():
     check("the stale 'Updated' time is still the real one",
           all(upd is not None for _, _, _, live, upd, now in shown
               if not live and now.timestamp() >= start[0]))
+
+
+def test_wifi():
+    print("\nwhen there is no WiFi, or a bad one")
+    # the table that turns the checks into words is covered in its own right
+    V = netdiag.verdict
+    check("hotspot: join and open", V("HOTSPOT", "", None)[0] == "No WiFi"
+          and "TubeBoard-setup" in V("HOTSPOT", "", None)[1] and "10.41.0.1" in V("HOTSPOT", "", None)[1])
+    check("connecting names the network", V("CONNECTING", "HomeNet", None) == ("Joining WiFi", "Connecting to HomeNet"))
+    check("a sign-in page is told apart from no internet",
+          V("CONNECTED", "Cafe", 302)[0] == "WiFi needs sign-in" and V("CONNECTED", "Cafe", "dns")[0] == "No internet"
+          and V("CONNECTED", "Cafe", "noroute")[0] == "No internet")
+    check("internet fine means the feed is at fault, and the feed is named",
+          V("CONNECTED", "HomeNet", 204)[0] == "Transport for London not answering"
+          and V("CONNECTED", "HomeNet", 204, source="national-rail")[0] == "National Rail not answering")
+    real_run = netdiag._run
+    try:
+        netdiag._run = lambda args, timeout=5: {"comitup-cli": "State: HOTSPOT\nConnection: comitup-680\n"}.get(args[0], "")
+        check("comitup's word is taken first", netdiag.state() == ("HOTSPOT", ""))
+        netdiag._run = lambda args, timeout=5: {"ip": "3: wlan0 inet 10.41.0.1/24 scope global wlan0"}.get(args[0], "")
+        check("the hotspot address alone means HOTSPOT", netdiag.state() == ("HOTSPOT", ""))
+        netdiag._run = lambda args, timeout=5: {"nmcli": "connected\n" if "general" in args else "HomeNet:802-11-wireless\n"}.get(args[0], "")
+        check("NetworkManager covers the rest", netdiag.state() == ("CONNECTED", "HomeNet"))
+        netdiag._run = lambda args, timeout=5: ""
+        check("nothing answering is UNKNOWN, not a crash", netdiag.state() == ("UNKNOWN", ""))
+    finally:
+        netdiag._run = real_run
+    conf = os.path.join(TMP, "comitup.conf")
+    with open(conf, "w") as f:
+        f.write("# comment\nap_name: Jamies-Board\nweb_service: x\n")
+    check("the hotspot name comes from comitup's config", netdiag.hotspot_name(conf) == "Jamies-Board")
+    check("and has a default when there is none", netdiag.hotspot_name(os.path.join(TMP, "nope")) == "TubeBoard-setup")
+
+    # the screen: no WiFi at boot shows the setup screen, not "Starting up" for ever
+    network.update(state="HOTSPOT", ssid="", probe=None, asked=0)
+    setup_frames.clear()
+    outage["lines"] = {"piccadilly", "victoria", "mildmay"}
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            shown = run_loop(THREE, frames=30)
+    finally:
+        outage["lines"] = set()
+    check("a failed fetch asks the network what is wrong", network["asked"] >= 1)
+    check("in hotspot mode the screen is the setup screen",
+          setup_frames and all(st == "HOTSPOT" and hs == "TubeBoard-setup" for st, _, hs in setup_frames),
+          setup_frames[:2])
+    elapsed = shown[-1][5].timestamp() - shown[0][5].timestamp()
+    check("and it is asked again only every half minute, not every frame",
+          network["asked"] <= elapsed / 30 + 1, (network["asked"], elapsed))
+
+    # a join in progress: the screen says it took
+    network.update(state="CONNECTING", ssid="HomeNet", probe=None, asked=0)
+    setup_frames.clear()
+    outage["lines"] = {"piccadilly", "victoria", "mildmay"}
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            run_loop(THREE, frames=12)
+    finally:
+        outage["lines"] = set()
+    check("while joining, the screen says WIFI OK and which network",
+          setup_frames and setup_frames[-1][:2] == ("CONNECTING", "HomeNet"), setup_frames[-1:])
+
+    # on WiFi, no internet: the board stays a board and the footer says what is wrong
+    network.update(state="CONNECTED", ssid="HomeNet", probe="dns", asked=0)
+    setup_frames.clear(); diags.clear()
+    outage["lines"] = {"piccadilly", "victoria", "mildmay"}
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            run_loop(THREE, frames=12)
+    finally:
+        outage["lines"] = set()
+    check("no internet is a board with a diagnosis in the footer, not the setup screen",
+          not setup_frames and any(d and d[0] == "No internet" for d, _ in diags), diags[:3])
+
+    # and once a fetch works, the diagnosis is gone
+    network.update(state="CONNECTED", ssid="HomeNet", probe=204, asked=0)
+    diags.clear()
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        run_loop(THREE, frames=20)
+    check("a good fetch clears it", all(d is None for d, _ in diags[3:]), diags[3:6])
+    check("the address card shows for the first minutes after boot",
+          any(a == ("tubeboard", "192.168.1.23") for _, a in diags), diags[:3])
+    diags.clear()
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        run_loop(THREE, frames=120)
+    check("and not after three minutes", any(a is None for _, a in diags[-10:]))
+
+    # the frames themselves draw
+    at = dt.datetime(2026, 10, 6, 19, 30)
+    img = board.render_setup(1920, 1080, "HOTSPOT", "", "TubeBoard-setup", at)
+    check("the setup screen draws at 1080p", img.size == (1920, 1080))
+    img.save(os.path.join(TMP, "setup.png"))
+    img2 = board.render_setup(1920, 1080, "CONNECTING", "HomeNet", "TubeBoard-setup", at)
+    check("and the joining screen", img2.size == (1920, 1080) and img2.tobytes() != img.tobytes())
+    saved_qr = board.qrcode
+    try:
+        board.qrcode = None
+        check("no QR library still gives a setup screen",
+              board.render_setup(1920, 1080, "HOTSPOT", "", "TubeBoard-setup", at).size == (1920, 1080))
+    finally:
+        board.qrcode = saved_qr
+    v = views_for(THREE)
+    cols = board.fetch(v[0])[0]
+    plain = board.render(960, 540, v[0], cols, None, False, "", at, at, False, ss=1).tobytes()
+    told = board.render(960, 540, v[0], cols, None, False, "", at, at, False,
+                        diag=("No internet", "Connected on HomeNet, but nothing resolves"), ss=1).tobytes()
+    card = board.render(960, 540, v[0], cols, "Good Service", True, "", at, at, True,
+                        address=("tubeboard", "192.168.1.23"), ss=1).tobytes()
+    check("the footer changes with a diagnosis and with the address card",
+          plain != told and card != board.render(960, 540, v[0], cols, "Good Service", True, "", at, at, True, ss=1).tobytes())
+    long_dest = [{"platformName": "Eastbound - Platform 1", "direction": "inbound", "towards": "Hainault via Newbury Park",
+                  "destinationName": "Hainault Underground Station", "timeToStation": 420, "id": "9", "vehicleId": "9"}]
+    rows = [(board.row_text(long_dest[0]), 420)]
+    img = board.render(960, 540, v[0], [{"label": "EASTBOUND", "towards": "", "rows": rows}] * 2,
+                       "Good Service", True, "", at, at, True, ss=1)
+    check("a long destination is clipped rather than run into the minutes", img.size == (960, 540))
+    d = board.ImageDraw.Draw(img)
+    check("clip never leaves four dots",
+          board.clip(d, "No service between Hyde Park Corner and Acton Town. More words here to make it long.",
+                     board.font("regular", 18), 300).count("....") == 0)
 
 
 def test_cli_flags():
@@ -736,6 +884,64 @@ def test_page():
         srv.shutdown()
 
 
+def test_forget_wifi():
+    print("\nforgetting the WiFi")
+    calls = []
+    saved_nm, saved_hs = portal._nm, portal.hotspot_name
+
+    def fake_nm(args, timeout=15):
+        calls.append(args)
+        if args[:2] == ["-t", "-f"]:
+            return ("11-11:802-11-wireless:HomeNet\n22-22:ethernet:Wired connection 1\n"
+                    "33-33:802-11-wireless:TubeBoard-setup\n44-44:802-11-wireless:comitup-680\n"
+                    "55-55:802-11-wireless:Mums:House\n")
+        return ""
+    portal._nm, portal.hotspot_name = fake_nm, lambda: "TubeBoard-setup"
+    try:
+        nets = portal.wifi_connections()
+        check("saved WiFi is listed, wired and the hotspot left out",
+              [n for _, n in nets] == ["HomeNet", "Mums:House"], nets)
+        gone = portal.forget_wifi()
+        deletes = [c for c in calls if c[:3] == ["connection", "delete", "uuid"]]
+        check("forgetting deletes exactly those", gone == ["HomeNet", "Mums:House"]
+              and [c[3] for c in deletes] == ["11-11", "55-55"], deletes)
+        check("the shell says what it did", "forgot HomeNet" in quiet(portal.cli_forget_wifi))
+        page = portal.home()
+        check("the page lists the networks and asks for the word",
+              "HomeNet" in page and "FORGET" in page and 'action="/forget-wifi"' in page)
+        srv = portal.ThreadingHTTPServer(("127.0.0.1", 0), portal.H)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            dels_before = len([x for x in calls if x[:2] == ["connection", "delete"]])
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("POST", "/forget-wifi", "confirm=yes+please",
+                      {"Content-Type": "application/x-www-form-urlencoded"})
+            r = c.getresponse(); body = r.read().decode(); c.close()
+            dels = lambda: len([x for x in calls if x[:2] == ["connection", "delete"]])   # noqa: E731
+            check("the wrong word changes nothing", "Nothing was changed" in body and dels() == dels_before)
+            before = len(calls)
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("POST", "/forget-wifi", "confirm=FORGET",
+                      {"Content-Type": "application/x-www-form-urlencoded"})
+            r = c.getresponse(); r.read(); c.close()
+            check("the right word answers first and forgets after", r.status == 303
+                  and r.getheader("Location") == "/?forgot=1" and len(calls) == before)
+            # the real handler waits two seconds so the phone gets its answer; the timer
+            # would fire later and call the stubbed nmcli, which is harmless, but do not
+            # leave it to run after the stubs are gone
+            for t in threading.enumerate():
+                if isinstance(t, threading.Timer):
+                    t.cancel()
+        finally:
+            srv.shutdown()
+        portal._nm = lambda args, timeout=15: (_ for _ in ()).throw(RuntimeError("nmcli is not installed"))
+        check("no nmcli is one sentence", "not installed" in main_with("--forget-wifi"))
+        check("and the page still loads without it", "Could not list" in portal.home())
+    finally:
+        portal._nm, portal.hotspot_name = saved_nm, saved_hs
+
+
 def test_both_ends():
     print("\nthe page and the board agree on the file")
     write_portal(dict(BASE))
@@ -760,9 +966,11 @@ if __name__ == "__main__":
     test_fetch_and_render()
     test_loop()
     test_outage()
+    test_wifi()
     test_cli_flags()
     test_shell()
     test_page()
+    test_forget_wifi()
     test_both_ends()
     print()
     if FAILS:

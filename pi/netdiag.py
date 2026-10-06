@@ -109,11 +109,26 @@ def verdict(st, ssid, probe_result, hotspot_name="TubeBoard-setup", source="tfl"
 
 
 def diagnose(hotspot_name="TubeBoard-setup", source="tfl"):
-    """Run the checks and return the verdict. Call it only when a fetch has failed:
-    a board that is fine has nothing to diagnose and no reason to make requests."""
+    """Run the checks. Returns (verdict, state, ssid). Call it only when a fetch has
+    failed: a board that is fine has nothing to diagnose and no reason to make
+    requests."""
     st, ssid = state()
     pr = probe() if st == CONNECTED else None
-    return verdict(st, ssid, pr, hotspot_name, source), st
+    return verdict(st, ssid, pr, hotspot_name, source), st, ssid
+
+
+def hotspot_name(conf="/etc/comitup.conf", default="TubeBoard-setup"):
+    """What the setup hotspot is called, from comitup's own config, so the screen
+    never names a network the phone will not see."""
+    try:
+        with open(conf) as f:
+            for line in f:
+                m = re.match(r"\s*ap_name\s*:\s*(\S+)", line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return default
 
 
 def address():
@@ -126,7 +141,7 @@ def address():
 
 
 if __name__ == "__main__":
-    (short, long), st = diagnose()
-    print(f"state: {st}")
+    (short, long), st, ssid = diagnose(hotspot_name())
+    print(f"state: {st}  ssid: {ssid or '-'}  hotspot: {hotspot_name()}")
     print(f"{short}: {long}" if short else "no finding")
     print("address:", address())
