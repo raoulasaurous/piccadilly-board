@@ -7,3 +7,7 @@ backup/
 # published as an artifact, so the page itself is not source.
 case/viewer.html
 case/viewer.html.png
+
+# Python leaves these next to the source; they were tracked by mistake.
+__pycache__/
+*.pyc
