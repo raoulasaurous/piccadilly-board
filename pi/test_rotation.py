@@ -291,6 +291,27 @@ def test_fetch_and_render():
     check("a rotation draws dots a single board does not", frame((0, 3)) != frame(None))
     check("a one-board rotation draws no dots", frame((0, 1)) == frame(None))
 
+    # a part closure with eastbound trains to two destinations: one direction, kept
+    # as one column, and the westbound column stays and says it is empty. Splitting
+    # them by destination instead lost the westbound column.
+    closure = [{"platformName": "Eastbound - Platform 1", "direction": "inbound", "towards": "Cockfosters",
+                "destinationName": "Cockfosters Underground Station", "timeToStation": 120, "id": "1", "vehicleId": "1"},
+               {"platformName": "Eastbound - Platform 1", "direction": "inbound", "towards": "Arnos Grove",
+                "destinationName": "Arnos Grove Underground Station", "timeToStation": 400, "id": "3", "vehicleId": "3"}]
+    groups = board.group(closure, board.DEFAULTS["columns"])
+    check("one stated direction to two destinations is one column, not two",
+          len(groups) == 1 and len(groups[0][1]) == 2, [(c, len(m)) for c, m in groups])
+    saved_get = board.requests
+    board.requests = stub(lambda url, params=None, timeout=None: Resp(closure) if "/Arrivals/" in url
+                          else Resp([{"lineStatuses": [{"statusSeverity": 14, "statusSeverityDescription": "Part Closure"}]}]))
+    try:
+        cols = board.fetch(views[0])[0]
+    finally:
+        board.requests = saved_get
+    check("and the board keeps the westbound column, empty",
+          [c["label"] for c in cols] == ["EASTBOUND", "WESTBOUND"] and cols[1]["rows"] == []
+          and len(cols[0]["rows"]) == 2, cols)
+
     # a line with an empty status array used to raise inside the status block and
     # log "status fetch failed" for a response that was fine
     def no_statuses(url, params=None, timeout=None):

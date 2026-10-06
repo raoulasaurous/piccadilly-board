@@ -373,6 +373,13 @@ def group(arrivals, columns):
         (buckets[dirn] if dirn in buckets else homeless).append(a)
     if not arrivals or (not homeless and all(buckets[d] for d in wanted)):
         return [(c, buckets[c["direction"]]) for c in columns]
+    if not homeless:
+        # Every train states its direction and they all go one way: a closure, or a
+        # terminus that still fills the field. That is one column, not a puzzle to
+        # solve by destination: splitting eastbound trains into "towards Cockfosters"
+        # and "towards Arnos Grove" would lose the westbound column that the empty
+        # direction is the whole point of showing. fetch() names it from the compass.
+        return [(None, list(arrivals))]
 
     # the direction split failed; regroup everything by the first key that splits it
     for key in (heading,
