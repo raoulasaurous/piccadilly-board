@@ -37,6 +37,7 @@ atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 import board                                                        # noqa: E402
 import portal                                                       # noqa: E402
+import rail                                                         # noqa: E402
 
 board.SETTINGS_PATH = os.path.join(TMP, "board-settings.json")
 portal.SETTINGS_PATH = os.path.join(TMP, "portal-settings.json")
@@ -123,6 +124,34 @@ def board_get(url, params=None, timeout=None):
 
 board.requests = stub(board_get)
 
+# The National Rail feed, as the Rail Data Marketplace sends it, for Drayton Park.
+RAIL_BOARD = {
+    "locationName": "Drayton Park", "crs": "DYP", "generatedAt": "2026-10-07T08:10:02",
+    "nrccMessages": [{"xhtmlMessage": "<p>Lifts at Highbury are out of order.</p>"}],
+    "trainServices": [
+        {"std": "08:12", "etd": "On time", "platform": "2", "operator": "Great Northern",
+         "serviceID": "a1", "destination": [{"locationName": "Moorgate", "crs": "MOG"}]},
+        {"std": "08:14", "etd": "08:17", "platform": "1", "operator": "Great Northern",
+         "serviceID": "b2", "destination": [{"locationName": "Welwyn Garden City", "crs": "WGC"}]},
+        {"std": "08:20", "etd": "Cancelled", "platform": "1", "isCancelled": True,
+         "serviceID": "c3", "destination": [{"locationName": "Hertford North", "crs": "HFN"}]},
+        {"std": "08:22", "etd": "Delayed", "platform": "1", "serviceID": "d4",
+         "destination": [{"locationName": "Stevenage", "crs": "SVG", "via": "Hertford North"}]},
+    ]}
+rail_calls = []
+
+
+def rail_get(url, params=None, headers=None, timeout=None):
+    rail_calls.append((url, dict(headers or {})))
+    r = Resp(dict(RAIL_BOARD) if (headers or {}).get("x-apikey") == "k-test" else {})
+    r.status_code = 200 if (headers or {}).get("x-apikey") == "k-test" else 403
+    return r
+
+
+rail.requests = stub(rail_get)
+RAIL_STATION = {"source": "national-rail", "line": "great-northern", "station_id": "DYP",
+                "station_name": "Drayton Park"}
+
 THREE = {"stations": [
     {"line": "piccadilly", "station_id": "940GZZLUASL", "station_name": "Arsenal"},
     {"line": "victoria", "station_id": "940GZZLUHAI", "station_name": "Highbury & Islington"},
@@ -177,6 +206,69 @@ def test_views():
     check("a number or a bool where the list should be gives one board",
           len(v5) == 1 and len(vt) == 1 and v5[0]["station_name"] == "Arsenal")
     check("and says so in the journal", "not a list" in err.getvalue())
+
+
+def test_rail_board():
+    print("\na National Rail board")
+    v = views_for({"stations": THREE["stations"] + [RAIL_STATION], "rail_api_key": "k-test"})
+    check("the rail station is a fourth board with its own source",
+          len(v) == 4 and v[3]["source"] == "national-rail" and v[3]["line"] == "great-northern")
+    check("the cache tells it apart from a TfL board with the same ids",
+          board.view_key(v[3]) != board.view_key(dict(v[3], source="tfl")))
+    saved = fake_clock[0]
+    try:
+        # the stub board is for 08:10; predictions are relative to now
+        board.dt = types.SimpleNamespace(datetime=FakeDT, timedelta=dt.timedelta)
+        fake_clock[0] = dt.datetime(2026, 10, 7, 8, 10).timestamp()
+        cols, status, ok, why = board.fetch(v[3])
+    finally:
+        board.dt = dt
+        fake_clock[0] = saved
+    check("the feed was asked with the key in the header",
+          bool(rail_calls) and rail_calls[-1][1].get("x-apikey") == "k-test"
+          and "/GetDepartureBoard/DYP" in rail_calls[-1][0], rail_calls[-1:])
+    check("two columns, named by the compass for the line",
+          [c["label"] for c in cols] == ["SOUTHBOUND", "NORTHBOUND"], [c["label"] for c in cols])
+    check("the southbound column says where it goes",
+          cols[0]["towards"] == "Moorgate" and cols[0]["rows"][0] == ("Moorgate", 120), cols[0])
+    check("the cancelled train is not drawn, the delayed one keeps its time",
+          [r[0] for r in cols[1]["rows"]] == ["Welwyn Garden City", "Stevenage via Hertford North"],
+          cols[1]["rows"])
+    check("the status line is TfL's for the operator",
+          status == "Good Service" and ok and any("/Line/great-northern/Status" in u for u in board_calls))
+    at = dt.datetime(2026, 10, 7, 8, 10)
+    img = board.render(1920, 1080, v[3], cols, status, ok, why, at, at, True, rotation=(3, 4))
+    img.save(os.path.join(TMP, "rail.png"))
+    check("it draws", img.size == (1920, 1080))
+    check("the header knows the operator",
+          board.LINE_NAMES["great-northern"] == "Great Northern"
+          and board.NETWORK["great-northern"] == "NATIONAL RAIL")
+
+    # no key: the board says what is missing instead of asking with nothing
+    v = views_for({"stations": THREE["stations"] + [RAIL_STATION]})
+    try:
+        board.fetch(v[3])
+        check("no key is a clear refusal", False)
+    except Exception as e:                      # noqa: BLE001
+        check("no key is a clear refusal", "raildata.org.uk" in str(e), e)
+    v = views_for({"stations": THREE["stations"] + [RAIL_STATION], "rail_api_key": "wrong"})
+    try:
+        board.fetch(v[3])
+        check("a refused key says so", False)
+    except Exception as e:                      # noqa: BLE001
+        check("a refused key says so", "refused the key" in str(e), e)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        run_loop({"stations": [RAIL_STATION], "rail_api_key": "k-test"}, argv=["board.py", "--explain"])
+    text = out.getvalue()
+    check("--explain shows the feed's own account and the columns",
+          "Drayton Park [DYP]" in text and "Cancelled" in text and "The board draws 2 column(s)" in text,
+          text[:400])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        run_loop({"stations": [RAIL_STATION]}, argv=["board.py", "--explain"])
+    check("--explain with no key says how to get one", "raildata.org.uk" in out.getvalue())
 
 
 def test_fetch_and_render():
@@ -469,7 +561,7 @@ def test_shell():
     quiet(portal.cli_add, "Highbury & Islington", "mildmay")
     s = portal.load()
     check("the same station on another line is another board",
-          s["stations"][2] == {"line": "mildmay", "station_id": "910GHGHI",
+          s["stations"][2] == {"source": "tfl", "line": "mildmay", "station_id": "910GHGHI",
                                "station_name": "Highbury & Islington"}, s["stations"][2])
 
     check("the same board twice is refused",
@@ -509,6 +601,35 @@ def test_shell():
         quiet(portal.cli_add, f"stop{n}", "piccadilly")
     check("eight boards is the most", len(portal.load()["stations"]) == 8
           and "Eight" in refused(portal.cli_add, "stop8", "piccadilly"))
+
+    # a National Rail board: by code, with the key saved once
+    write_portal(dict(BASE))
+    msg = quiet(portal.cli_add_rail, "dyp", "great-northern")
+    s = portal.load()
+    check("a rail board is added by its code, named by the code until there is a key",
+          s["stations"][1] == {"source": "national-rail", "line": "great-northern",
+                               "station_id": "DYP", "station_name": "DYP"}, s.get("stations"))
+    check("and the shell says the key is missing", "rail-key" in msg)
+    check("--list-stations says so too", "No rail key" in quiet(portal.cli_list))
+    quiet(portal.cli_rail_key, "k-test")
+    check("the key saves", portal.load()["rail_api_key"] == "k-test")
+    quiet(portal.cli_drop, 2)
+    quiet(portal.cli_add_rail, "DYP", "great-northern")
+    s = portal.load()
+    check("with a key the feed names the station",
+          s["stations"][1]["station_name"] == "Drayton Park", s["stations"][1])
+    check("the single-station keys stay on the TfL board",
+          (s["source"], s["station_id"]) == ("tfl", "940GZZLUASL"))
+    write_portal(dict(BASE, rail_api_key="k-test"))
+    quiet(portal.cli_add_rail, "DYP", "great-northern")
+    quiet(portal.cli_drop, 1)
+    s = portal.load()
+    check("a lone rail board is the single station, source and all",
+          s["stations"] == [] and s["source"] == "national-rail" and s["station_id"] == "DYP", s)
+    check("a bad code is refused", "three-letter" in refused(portal.cli_add_rail, "Drayton", "great-northern"))
+    check("a tube line is not a rail operator",
+          "--line must be one of" in refused(portal.cli_add_rail, "DYP", "victoria"))
+    check("--line alone is refused for rail too", "goes with" in main_with("--line", "great-northern"))
 
     # a file edited by hand: no name on an entry, or a number where the list goes
     write_portal(dict(BASE, stations=[dict(BASE), {"line": "victoria", "station_id": "940GZZLUHAI"}]))
@@ -598,6 +719,19 @@ def test_page():
         code, page = req("GET", "/")
         check("a hand-edited entry with no name does not 500 the page",
               code == 200 and "940GZZLUHAI" in page)
+
+        write_portal(dict(BASE))
+        code, page = req("GET", "/")
+        check("the page offers National Rail", "National Rail" in page and 'name="crs"' in page)
+        req("POST", "/save-rail", "crs=dyp&line=great-northern&rail_api_key=k-test")
+        s = portal.load()
+        check("adding a rail board from the page works and keeps the key",
+              s.get("rail_api_key") == "k-test" and len(s["stations"]) == 2
+              and s["stations"][1]["station_name"] == "Drayton Park", s)
+        code, page = req("POST", "/save-rail", "crs=dy&line=great-northern")
+        check("a bad code from the page is refused", "three letters" in page)
+        code, page = req("GET", "/")
+        check("the list says which board is National Rail", "(National Rail)" in page)
     finally:
         srv.shutdown()
 
@@ -622,6 +756,7 @@ def test_both_ends():
 
 if __name__ == "__main__":
     test_views()
+    test_rail_board()
     test_fetch_and_render()
     test_loop()
     test_outage()

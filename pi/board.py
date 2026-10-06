@@ -28,12 +28,22 @@ try:
 except Exception as e:                          # noqa: BLE001
     screen = None
     print("screen control unavailable:", e, file=sys.stderr, flush=True)
+try:
+    import rail                                 # National Rail departures, for stations TfL does not carry
+except Exception as e:                          # noqa: BLE001
+    rail = None
+    print("National Rail boards unavailable:", e, file=sys.stderr, flush=True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
 TFL = "https://api.tfl.gov.uk"
 
 DEFAULTS = {
+    # Where the trains come from. "tfl" is the unified API, which carries the tube,
+    # the DLR, the Elizabeth line and the Overground. "national-rail" is the Live
+    # Departure Board feed, for everything else (Drayton Park is Great Northern),
+    # and then station_id is the station's three-letter CRS code.
+    "source": "tfl",
     "line": "piccadilly",
     "station_id": "940GZZLUASL",
     "station_name": "Arsenal",
@@ -50,6 +60,10 @@ DEFAULTS = {
     "stations": [],
     "rotate_seconds": 30,
     "app_key": "",
+    # National Rail's feed needs a key: a free account at raildata.org.uk, subscribed
+    # to "Live Departure Board". The url is only for when the product path moves.
+    "rail_api_key": "",
+    "rail_api_url": "",
     # Screen brightness, driven over the HDMI cable. Once the monitor is in the
     # frame its own buttons are unreachable, so this is the only way to change it.
     "brightness": 100,
@@ -96,6 +110,14 @@ LINE_COLOURS = {
     "london-overground": (238, 124, 14),
 }
 
+if rail:
+    for _lid, _t in rail.LINES.items():
+        LINE_NAMES.setdefault(_lid, _t["name"])
+        LINE_COLOURS.setdefault(_lid, _t["colour"])
+        # not a TfL roundel's network, but the bar has to say something true and
+        # short, and "NATIONAL RAIL" is what the signs outside the station say
+        NETWORK.setdefault(_lid, "NATIONAL RAIL")
+
 BG = (6, 8, 12)
 WHITE = (255, 255, 255)
 DIM = (150, 156, 170)
@@ -135,6 +157,9 @@ class Settings:
     def __getitem__(self, k):
         return self.data[k]
 
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
 
 def station_views(settings):
     """The boards to show, in order, one flat settings dict each.
@@ -163,6 +188,7 @@ def station_views(settings):
                   file=sys.stderr, flush=True)
             continue
         v = dict(settings.data)
+        v["source"] = str(st.get("source") or "tfl")
         v["line"] = line
         v["station_id"] = stop
         v["station_name"] = str(st.get("station_name") or stop)
@@ -177,7 +203,7 @@ def station_views(settings):
 
 def view_key(v):
     """What makes two boards the same board, for the per-board data cache."""
-    return v["line"], v["station_id"]
+    return v.get("source") or "tfl", v["line"], v["station_id"]
 
 
 # ---------------------------------------------------------------- TfL
@@ -405,21 +431,39 @@ def tidy_reason(reason, line):
     return out
 
 
-def fetch(settings):
-    """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
+def arrivals_for(settings):
+    """The raw predictions for one board, in TfL's shape, from whichever feed
+    carries the station."""
+    if settings.get("source") == "national-rail":
+        if rail is None:
+            raise RuntimeError("rail.py is missing: the installer copies it next to board.py")
+        board = rail.fetch(settings["station_id"], settings.get("rail_api_key") or "",
+                           settings.get("rail_api_url") or None)
+        return rail.predictions(board, dt.datetime.now(), settings["line"])
     q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
     # quote both: the settings file can hold anything, and a stray / or ? would
     # rewrite the path or the query instead of failing
     line = up.quote(settings["line"], safe="")
     stop = up.quote(settings["station_id"], safe="")
-    arrivals = requests.get(f"{TFL}/Line/{line}/Arrivals/{stop}", params=q, timeout=10)
-    arrivals.raise_for_status()
-    arrivals = arrivals.json()
+    r = requests.get(f"{TFL}/Line/{line}/Arrivals/{stop}", params=q, timeout=10)
+    r.raise_for_status()
+    arrivals = r.json()
     if not isinstance(arrivals, list):
         raise ValueError("arrivals: unexpected response")
+    return arrivals
+
+
+def fetch(settings):
+    """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
+    arrivals = arrivals_for(settings)
     arrivals.sort(key=lambda a: a.get("timeToStation", 1e9))
     arrivals = dedupe(arrivals)
 
+    # The status line is TfL's for every board. TfL publishes a status for the
+    # National Rail operators too, under the same line ids, so a Great Northern
+    # board gets a Great Northern status the same way the Piccadilly one does.
+    q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
+    line = up.quote(settings["line"], safe="")
     status_text, status_ok, status_why = None, False, ""
     try:
         r = requests.get(f"{TFL}/Line/{line}/Status", params=q, timeout=10)
@@ -469,23 +513,38 @@ def explain(settings):
     The first thing to run when a direction is missing from the screen: it separates
     "TfL is not telling us about those trains" from "we were told and mislaid them",
     and those have very different fixes."""
-    q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
-    line = up.quote(settings["line"], safe="")
-    stop = up.quote(settings["station_id"], safe="")
-    url = f"{TFL}/Line/{line}/Arrivals/{stop}"
-    print(f'{settings["station_name"]}  [{settings["station_id"]}]  {settings["line"]} line')
-    print(url + "\n")
+    if settings.get("source") == "national-rail":
+        if rail is None:
+            raise RuntimeError("rail.py is missing: the installer copies it next to board.py")
+        key = settings.get("rail_api_key") or ""
+        print(f'{settings["station_name"]}  [{settings["station_id"]}]  National Rail, {settings["line"]}')
+        print(rail.url_for(settings.get("rail_api_url"), settings["station_id"]) + "\n")
+        if not key:
+            print("No rail_api_key in settings.json, so this board cannot fetch anything.")
+            print("Get one free at raildata.org.uk (subscribe to Live Departure Board), then:")
+            print("  sudo python3 portal.py --rail-key YOURKEY")
+            return
+        board = rail.fetch(settings["station_id"], key, settings.get("rail_api_url") or None)
+        rail.explain(board, dt.datetime.now(), settings["line"])
+        raw = rail.predictions(board, dt.datetime.now(), settings["line"])
+    else:
+        q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
+        line = up.quote(settings["line"], safe="")
+        stop = up.quote(settings["station_id"], safe="")
+        url = f"{TFL}/Line/{line}/Arrivals/{stop}"
+        print(f'{settings["station_name"]}  [{settings["station_id"]}]  {settings["line"]} line')
+        print(url + "\n")
 
-    r = requests.get(url, params=q, timeout=10)
-    r.raise_for_status()
-    raw = r.json()
-    if not isinstance(raw, list):
-        raise ValueError("arrivals: unexpected response")
-    print(f"TfL returned {len(raw)} prediction(s)")
-    tally = Counter((a.get("platformName") or "(no platform)",
-                     a.get("direction") or "(no direction)") for a in raw)
-    for (plat, dirn), n in sorted(tally.items()):
-        print(f"  {n:3d}  {plat:<26}  direction={dirn}")
+        r = requests.get(url, params=q, timeout=10)
+        r.raise_for_status()
+        raw = r.json()
+        if not isinstance(raw, list):
+            raise ValueError("arrivals: unexpected response")
+        print(f"TfL returned {len(raw)} prediction(s)")
+        tally = Counter((a.get("platformName") or "(no platform)",
+                         a.get("direction") or "(no direction)") for a in raw)
+        for (plat, dirn), n in sorted(tally.items()):
+            print(f"  {n:3d}  {plat:<26}  direction={dirn}")
 
     raw.sort(key=lambda a: a.get("timeToStation", 1e9))
     lost = len(raw) - len(dedupe(raw))

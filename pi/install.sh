@@ -10,7 +10,9 @@ apt-get update
 # with a screen attached:  SKIP_COMITUP=1 bash install.sh
 # ddcutil drives the monitor's brightness over the HDMI cable, which is the
 # only way to change it once the screen is sealed in the frame.
-PKGS="python3-pil python3-requests python3-numpy fonts-dejavu-core ddcutil"
+# python3-qrcode draws the setup screen's QR code; without it the screen says the
+# hotspot's name in words and nothing else is lost.
+PKGS="python3-pil python3-requests python3-numpy python3-qrcode fonts-dejavu-core ddcutil"
 [ -n "$SKIP_COMITUP" ] || PKGS="$PKGS comitup"
 apt-get install -y $PKGS
 
@@ -19,7 +21,7 @@ NEED_REBOOT=no
 [ -f /etc/systemd/system/tubeboard.service ] || NEED_REBOOT=yes
 
 install -d /opt/tubeboard
-cp board.py portal.py screen.py /opt/tubeboard/
+cp board.py portal.py screen.py rail.py netdiag.py /opt/tubeboard/
 [ -f /opt/tubeboard/settings.json ] || cp settings.json /opt/tubeboard/
 cp tubeboard.service tubeboard-portal.service /etc/systemd/system/
 

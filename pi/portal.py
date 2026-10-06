@@ -14,11 +14,15 @@ this page is not reachable from yours (Raspberry Pi Connect gives that shell):
 
     python3 portal.py --list-stations
     sudo python3 portal.py --add-station "Highbury & Islington" --line victoria
+    sudo python3 portal.py --rail-key YOURKEY
+    sudo python3 portal.py --add-rail DYP --line great-northern
     sudo python3 portal.py --drop-station 2
     sudo python3 portal.py --rotate 30
 
 The sudo is because the installer and the service write settings.json as root;
-reading it needs nothing.
+reading it needs nothing. A National Rail station (one TfL's feed does not carry,
+such as Drayton Park) is added by its three-letter code and needs the key: a free
+account at raildata.org.uk, subscribed to "Live Departure Board".
 """
 import argparse
 import datetime as dt
@@ -32,6 +36,11 @@ import urllib.parse as up
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
+
+try:
+    import rail                                 # National Rail departures, for stations TfL does not carry
+except Exception:                               # noqa: BLE001
+    rail = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
@@ -47,6 +56,12 @@ TUBE_LINES = {
     "suffragette": "Suffragette", "weaver": "Weaver", "windrush": "Windrush",
 }
 LIMIT = 25  # search results shown; the loop and the "showing the first N" notice share it
+# The National Rail operators, for the boards TfL's feed does not carry.
+RAIL_LINES = rail.LINES if rail else {}
+
+
+def line_name(line):
+    return TUBE_LINES.get(line) or RAIL_LINES.get(line, {}).get("name") or line
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Tube Board settings</title>
@@ -55,7 +70,7 @@ body{{font-family:-apple-system,Helvetica,Arial,sans-serif;background:#0b0d12;co
 h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:15px;color:#9aa;margin:26px 0 8px;text-transform:uppercase;letter-spacing:.08em}}
 .now{{background:#141a26;border-radius:10px;padding:14px 16px;margin:14px 0}}
 .now b{{font-size:18px}} .now span{{color:#9aa}}
-input[type=text]{{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border-radius:8px;border:1px solid #334;background:#10141c;color:#fff}}
+input[type=text],select{{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border-radius:8px;border:1px solid #334;background:#10141c;color:#fff}}
 button,.btn{{display:inline-block;font-size:16px;padding:11px 16px;border-radius:8px;border:0;background:#0019a8;color:#fff;text-decoration:none;margin:6px 6px 0 0;cursor:pointer}}
 .btn.alt{{background:#222a38}}
 ul{{list-style:none;padding:0;margin:0}} li{{margin:8px 0}}
@@ -120,11 +135,11 @@ def rotation(s):
         stations = []
     # a hand-written entry may carry no name. The board shows the id, so do the same,
     # or this page answers 500 until the file is fixed, and the page is the fix.
-    r = [{"line": x["line"], "station_id": x["station_id"],
+    r = [{"source": x.get("source") or "tfl", "line": x["line"], "station_id": x["station_id"],
           "station_name": x.get("station_name") or x["station_id"]}
          for x in stations if isinstance(x, dict) and x.get("line") and x.get("station_id")]
     if not r and s.get("line") and s.get("station_id"):
-        r = [{"line": s["line"], "station_id": s["station_id"],
+        r = [{"source": s.get("source") or "tfl", "line": s["line"], "station_id": s["station_id"],
               "station_name": s.get("station_name") or s["station_id"]}]
     return r
 
@@ -136,12 +151,16 @@ def set_rotation(s, r):
     or a half-finished deploy with the new page and the old board, reads only those,
     and they must never name a station that is not on the screen. One board means no
     rotation at all, which is the shape every install had before this."""
-    r = [{"line": x["line"], "station_id": x["station_id"],
+    r = [{"source": x.get("source") or "tfl", "line": x["line"], "station_id": x["station_id"],
           "station_name": x.get("station_name") or x["station_id"]} for x in r]
     if r:
-        s["line"] = r[0]["line"]
-        s["station_id"] = r[0]["station_id"]
-        s["station_name"] = r[0]["station_name"]
+        # the single-station keys point at a TfL board when there is one: an older
+        # board.py reads only those, and only knows TfL's feed
+        lead = next((x for x in r if x["source"] == "tfl"), r[0])
+        s["source"] = lead["source"]
+        s["line"] = lead["line"]
+        s["station_id"] = lead["station_id"]
+        s["station_name"] = lead["station_name"]
         # labels come from TfL again for whichever station leads
         s["columns"] = [dict(c) for c in DEFAULT_COLUMNS]
     s["stations"] = r if len(r) > 1 else []
@@ -158,6 +177,17 @@ def find(q):
 
 def stop_name(m):
     return (m.get("name") or "").replace(" Underground Station", "")
+
+
+def rail_station_name(crs, line, key):
+    """What the feed calls the station, and a warning if it could not be asked. With
+    no key the code stands in for the name; the screen says what is missing."""
+    if not rail:
+        raise RuntimeError("rail.py is missing next to portal.py")
+    if not key:
+        return crs, "no key"
+    board = rail.fetch(crs, key)
+    return (rail._get(board, "locationName") or crs), ""
 
 
 def stop_lines(stop_id):
@@ -178,7 +208,7 @@ def home(msg=""):
                 f'<br><b>{esc(", ".join(x["station_name"] for x in shown))}</b><br><span>')
     else:
         head = (f'<span>Showing</span><br><b>{esc(s.get("station_name","?"))}</b>'
-                f'<br><span>{esc(TUBE_LINES.get(s.get("line",""), s.get("line","?")))} line, ')
+                f'<br><span>{esc(line_name(s.get("line","?")))} line, ')
     body += (f'<div class="now">{head}'
              f'{esc(s.get("rows",5))} trains each way, refresh every {esc(s.get("refresh_seconds",30))} s'
              f'<br>brightness {esc(s.get("brightness",100))}%'
@@ -198,7 +228,8 @@ def home(msg=""):
                  f'<input type="hidden" name="line" value="{esc(x["line"])}">'
                  f'<input type="hidden" name="station_id" value="{esc(x["station_id"])}">'
                  f'<span style="flex:1">{esc(x["station_name"])}<br>'
-                 f'<small style="margin:0">{esc(TUBE_LINES.get(x["line"], x["line"]))} line</small></span>'
+                 f'<small style="margin:0">{esc(line_name(x["line"]))} line'
+                 f'{" (National Rail)" if x.get("source") == "national-rail" else ""}</small></span>'
                  # the last board cannot be removed: an empty rotation is a blank screen
                  + ('<button class="btn alt" type="submit">Remove</button>' if len(r) > 1 else '')
                  + '</form></li>')
@@ -211,6 +242,20 @@ def home(msg=""):
                  '<label>Seconds on each board (5 to 300)</label>'
                  f'<input type="text" name="rotate_seconds" value="{esc(s.get("rotate_seconds",20))}">'
                  '<button type="submit">Save</button></form>')
+    if RAIL_LINES:
+        opts = "".join(f'<option value="{esc(k)}"{" selected" if k == "great-northern" else ""}>'
+                       f'{esc(t["name"])}</option>'
+                       for k, t in sorted(RAIL_LINES.items(), key=lambda kv: kv[1]["name"]))
+        body += ('<h2>National Rail</h2><form method="post" action="/save-rail">'
+                 '<label>Station code (three letters, DYP for Drayton Park)</label>'
+                 '<input type="text" name="crs" maxlength="3" placeholder="DYP">'
+                 f'<label>Operator</label><select name="line">{opts}</select>'
+                 '<label>Rail Data Marketplace key</label>'
+                 f'<input type="text" name="rail_api_key" value="{esc(s.get("rail_api_key", ""))}">'
+                 '<button type="submit">Add board</button></form>'
+                 "<small>Stations TfL does not serve come from National Rail's own feed. "
+                 'It needs a free key: an account at raildata.org.uk, subscribed to '
+                 '"Live Departure Board". Saved once, it is kept.</small>')
     body += ('<h2>Show one station only</h2><form method="get" action="/search">'
              '<input type="text" name="q" placeholder="Station name, e.g. Arsenal">'
              '<button type="submit">Search</button></form>'
@@ -448,6 +493,24 @@ class H(BaseHTTPRequestHandler):
                 return self._send('<div class="err">That is the only board. Pick another station '
                                   'instead of removing this one.</div>' + home())
             set_rotation(s, keep)
+        elif self.path == "/save-rail":
+            crs, line, key = g("crs").upper(), g("line"), g("rail_api_key")
+            if key:
+                s["rail_api_key"] = key
+            if not re.fullmatch(r"[A-Z]{3}", crs) or line not in RAIL_LINES:
+                return self._send('<div class="err">The station code is three letters, and the '
+                                  'operator one from the list.</div>' + home())
+            try:
+                name, _ = rail_station_name(crs, line, s.get("rail_api_key") or "")
+            except Exception as e:
+                return self._send(f'<div class="err">The rail feed did not answer: {esc(e)}</div>' + home())
+            r = rotation(s)
+            if any(x["line"] == line and x["station_id"] == crs for x in r):
+                return self._send('<div class="err">That station is already on the rotation.</div>' + home())
+            if len(r) >= 8:
+                return self._send('<div class="err">Eight boards is the most. Remove one first.</div>' + home())
+            r.append({"source": "national-rail", "line": line, "station_id": crs, "station_name": name})
+            set_rotation(s, r)
         elif self.path == "/rotate":
             try:
                 s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", "20"))))
@@ -485,8 +548,11 @@ def cli_list():
     else:
         print(f'{len(r)} boards, {s.get("rotate_seconds", 20)} s each:')
     for i, x in enumerate(r, 1):
-        print(f'  {i}. {x["station_name"]}, {TUBE_LINES.get(x["line"], x["line"])} line'
-              f'  [{x["station_id"]}]')
+        rail_tag = " (National Rail)" if x.get("source") == "national-rail" else ""
+        print(f'  {i}. {x["station_name"]}, {line_name(x["line"])} line{rail_tag}  [{x["station_id"]}]')
+    if any(x.get("source") == "national-rail" for x in r) and not s.get("rail_api_key"):
+        print("No rail key saved, so the National Rail board(s) cannot fetch. "
+              "Get one at raildata.org.uk, then: sudo python3 portal.py --rail-key YOURKEY")
 
 
 def cli_resolve(q, line):
@@ -542,6 +608,38 @@ def cli_add(q, line):
     cli_list()
 
 
+def cli_add_rail(crs, line):
+    if not rail:
+        raise SystemExit("rail.py is missing next to portal.py, so there are no National Rail boards.")
+    crs = crs.strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", crs):
+        raise SystemExit("A National Rail station is its three-letter code, e.g. DYP for Drayton Park.")
+    if line not in RAIL_LINES:
+        raise SystemExit("--line must be one of: " + ", ".join(sorted(RAIL_LINES)))
+    s = load()
+    name, warn = rail_station_name(crs, line, s.get("rail_api_key") or "")
+    r = rotation(s)
+    if any(x["line"] == line and x["station_id"] == crs for x in r):
+        raise SystemExit(f"{name} on {line_name(line)} is already on the rotation.")
+    if len(r) >= 8:
+        raise SystemExit("Eight boards is the most. Drop one first.")
+    r.append({"source": "national-rail", "line": line, "station_id": crs, "station_name": name})
+    save(set_rotation(s, r))
+    print(f'Added {name}, {line_name(line)} (National Rail).')
+    if warn:
+        print("No rail key saved yet, so this board will say so on the screen until there is one:")
+        print("  sudo python3 portal.py --rail-key YOURKEY")
+    cli_list()
+
+
+def cli_rail_key(key):
+    s = load()
+    s["rail_api_key"] = key.strip()
+    save(s)
+    print("Rail key saved." if s["rail_api_key"] else "Rail key cleared.")
+    cli_list()
+
+
 def cli_drop(n):
     s = load()
     r = rotation(s)
@@ -569,7 +667,11 @@ def main():
     ap.add_argument("--list-stations", action="store_true", help="print the rotation and exit")
     ap.add_argument("--add-station", metavar="NAME",
                     help="add a station to the rotation (needs --line)")
-    ap.add_argument("--line", help="line id for --add-station, e.g. victoria, mildmay")
+    ap.add_argument("--line", help="line id for --add-station or --add-rail, e.g. victoria, great-northern")
+    ap.add_argument("--add-rail", metavar="CRS",
+                    help="add a National Rail station by its three-letter code (needs --line)")
+    ap.add_argument("--rail-key", metavar="KEY",
+                    help="save the Rail Data Marketplace key the National Rail boards need")
     ap.add_argument("--drop-station", type=int, metavar="N",
                     help="remove board N, as numbered by --list-stations")
     ap.add_argument("--rotate", type=int, metavar="SECONDS",
@@ -580,13 +682,22 @@ def main():
     # within a refresh, with no restart: it watches the file.
     did = False
     try:
+        if a.line and a.add_station is None and a.add_rail is None:
+            raise SystemExit("--line goes with --add-station or --add-rail")
+        if a.rail_key is not None:
+            cli_rail_key(a.rail_key)
+            did = True
         if a.add_station is not None:
             if not a.add_station.strip() or not a.line:
                 raise SystemExit("--add-station needs a name and --line, e.g. --line victoria")
             cli_add(a.add_station, a.line)
             did = True
-        elif a.line:
-            raise SystemExit("--line goes with --add-station")
+        if a.add_rail is not None:
+            if not a.add_rail.strip() or not a.line:
+                raise SystemExit("--add-rail needs a three-letter code and --line, "
+                                 "e.g. --add-rail DYP --line great-northern")
+            cli_add_rail(a.add_rail, a.line)
+            did = True
         if a.drop_station is not None:
             cli_drop(a.drop_station)
             did = True
