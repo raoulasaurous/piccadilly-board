@@ -48,7 +48,7 @@ DEFAULTS = {
     # board, built from the line and station_id above, which is what every install
     # before the rotation had.
     "stations": [],
-    "rotate_seconds": 20,
+    "rotate_seconds": 30,
     "app_key": "",
     # Screen brightness, driven over the HDMI cable. Once the monitor is in the
     # frame its own buttons are unreachable, so this is the only way to change it.
@@ -145,7 +145,14 @@ def station_views(settings):
     a single view built from the top-level line and station_id, which is every
     install made before this existed."""
     views = []
-    for st in settings["stations"] or []:
+    stations = settings["stations"]
+    if not isinstance(stations, list):
+        # settings.json can be edited by hand, and this runs before the first frame:
+        # a number here would be a restart loop on a wall nobody can reach
+        print("settings: stations is not a list, showing one board:", stations,
+              file=sys.stderr, flush=True)
+        stations = []
+    for st in stations:
         if not isinstance(st, dict):
             continue
         line = str(st.get("line") or "").strip()
@@ -424,7 +431,7 @@ def fetch(settings):
             worst = min(sts, key=lambda s: (1 if s.get("statusSeverity", 10) in (10, 18) else 0,
                                             s.get("statusSeverity", 10)))
             status_text, status_ok = worst["statusSeverityDescription"], True
-        status_why = tidy_reason(worst.get("reason") or "", line)
+            status_why = tidy_reason(worst.get("reason") or "", line)
     except Exception as e:
         print("status fetch failed:", e, file=sys.stderr, flush=True)
 
@@ -841,17 +848,26 @@ def main():
                 print("\n" + "-" * 70 + "\n")
             if len(views) > 1:
                 print(f"Board {i + 1} of {len(views)}")
-            explain(v)
+            try:
+                explain(v)
+            except Exception as e:                  # noqa: BLE001
+                # a station TfL will not answer for is the usual reason to run this,
+                # so it must not hide the boards after it
+                print("could not explain this board:", e)
         return
     if args.png:
         i = max(0, min(len(views) - 1, args.view - 1))
+        if i != args.view - 1:
+            # the clone's settings.json holds one board, so --view 2 there is a common slip
+            print(f"only {len(views)} board(s) in settings, drawing board {i + 1}",
+                  file=sys.stderr, flush=True)
         v = views[i]
         W, H = (int(n) for n in args.size.split("x"))
         cols, status, status_ok, status_why = fetch(v)
         now = dt.datetime.now()
         render(W, H, v, cols, status, status_ok, status_why, now, now, True,
                rotation=(i, len(views))).save(args.png)
-        print("wrote", args.png, flush=True)
+        print(f"wrote {args.png} (board {i + 1} of {len(views)})", flush=True)
         return
 
     fb = Framebuffer()
@@ -904,12 +920,17 @@ def main():
             for msg in screen.apply(settings.data, dt.datetime.now(),
                                     force=changed_settings):
                 print("screen:", msg, flush=True)
+        # settings.json can be edited by hand. A bad number in either of these must
+        # not put the board in a restart loop on a wall nobody can reach. (json reads
+        # Infinity, and int(inf) is an OverflowError, not a ValueError.)
         try:
             rotate_s = max(5, min(300, int(settings["rotate_seconds"])))
-        except (TypeError, ValueError):
-            # settings.json can be edited by hand. A bad number here must not put
-            # the board in a restart loop on a wall nobody can reach.
-            rotate_s = 20
+        except (TypeError, ValueError, OverflowError):
+            rotate_s = 30
+        try:
+            refresh_s = max(5, int(settings["refresh_seconds"]))
+        except (TypeError, ValueError, OverflowError):
+            refresh_s = 30
         if len(views) > 1 and t - last_rotate >= rotate_s:
             idx = (idx + 1) % len(views)
             last_rotate = t
@@ -923,27 +944,32 @@ def main():
         # cold boot this is also the blank-looking first frame, which beats a dead
         # screen while the first request runs.
         draw(v, b, rotation)
-        if t - b["last_fetch"] >= settings["refresh_seconds"] or not b["cols"]:
+        if t - b["last_fetch"] >= refresh_s or not b["cols"]:
             b["last_fetch"] = t
             try:
                 b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
                 b["updated"], b["live"], b["failures"] = dt.datetime.now(), True, 0
-                draw(v, b, rotation)
             except Exception as e:
                 b["failures"] += 1
                 # name the board: with a rotation, "fetch failed" alone does not say
                 # which station is the one that cannot be reached
                 print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,
                       file=sys.stderr, flush=True)
-                # keep showing the last board; after ~3 minutes of failures say so
-                if b["failures"] >= max(1, 180 // settings["refresh_seconds"]):
+                # Keep showing the last board, and after three minutes without a good
+                # fetch say so. Measured in time, not in failures: a board is only
+                # fetched while it is on screen, so counting failures would wait three
+                # minutes for every board on the rotation before admitting anything.
+                if b["updated"] is None or (dt.datetime.now() - b["updated"]).total_seconds() >= 180:
                     b["live"] = False
+            # Draw again whatever happened: the frame before the fetch is as old as the
+            # fetch took, and a failure that changed the status line has to show.
+            draw(v, b, rotation)
         # Redraw every 10 s. The clock only needs a minute, but the "updated Xs
         # ago" line has to keep up or it is quietly lying, and a frame costs
         # about a third of a second on a Pi 3. With a rotation, wake for the
         # switch too, or a 20 s rotation drifts by up to ten.
         waits = [10.0, 60.0 - dt.datetime.now().second,
-                 settings["refresh_seconds"] - (time.time() - b["last_fetch"])]
+                 refresh_s - (time.time() - b["last_fetch"])]
         if len(views) > 1:
             waits.append(rotate_s - (time.time() - last_rotate))
         time.sleep(max(1.0, min(waits)))

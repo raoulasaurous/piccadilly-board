@@ -13,9 +13,12 @@ The same settings from a shell, for when the board is in someone else's house an
 this page is not reachable from yours (Raspberry Pi Connect gives that shell):
 
     python3 portal.py --list-stations
-    python3 portal.py --add-station "Highbury & Islington" --line victoria
-    python3 portal.py --drop-station 2
-    python3 portal.py --rotate 20
+    sudo python3 portal.py --add-station "Highbury & Islington" --line victoria
+    sudo python3 portal.py --drop-station 2
+    sudo python3 portal.py --rotate 30
+
+The sudo is because the installer and the service write settings.json as root;
+reading it needs nothing.
 """
 import argparse
 import datetime as dt
@@ -24,6 +27,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.parse as up
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -76,14 +80,17 @@ def load():
 
 
 def save(d):
-    tmp = SETTINGS_PATH + ".tmp"
+    # Two request threads, or a request and a shell command, can save at once. A
+    # scratch file of its own keeps one from truncating the other's half-written bytes.
+    fd, tmp = tempfile.mkstemp(dir=HERE, prefix="settings.json.", suffix=".tmp")
     try:
-        with open(tmp, "w") as f:
+        with os.fdopen(fd, "w") as f:
             json.dump(d, f, indent=2)
             # the Pi loses power without warning, so put the bytes on the card
             # before the rename makes them the live settings
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)        # mkstemp makes it private; the board and --list-stations read it
         os.replace(tmp, SETTINGS_PATH)
     except OSError:
         try:
@@ -106,8 +113,16 @@ def rotation(s):
 
     Seeded from the single station when nothing has been added yet, so adding a
     second station keeps the first instead of quietly replacing it."""
-    r = [dict(x) for x in (s.get("stations") or [])
-         if isinstance(x, dict) and x.get("line") and x.get("station_id")]
+    stations = s.get("stations")
+    if not isinstance(stations, list):
+        # a hand edit can leave anything here; reading it as empty lets --add-station
+        # write it back as a proper list instead of dying before it can save
+        stations = []
+    # a hand-written entry may carry no name. The board shows the id, so do the same,
+    # or this page answers 500 until the file is fixed, and the page is the fix.
+    r = [{"line": x["line"], "station_id": x["station_id"],
+          "station_name": x.get("station_name") or x["station_id"]}
+         for x in stations if isinstance(x, dict) and x.get("line") and x.get("station_id")]
     if not r and s.get("line") and s.get("station_id"):
         r = [{"line": s["line"], "station_id": s["station_id"],
               "station_name": s.get("station_name") or s["station_id"]}]
@@ -145,6 +160,13 @@ def stop_name(m):
     return (m.get("name") or "").replace(" Underground Station", "")
 
 
+def stop_lines(stop_id):
+    """The line ids TfL lists at a stop. Only the ones this board can draw."""
+    r = requests.get(f"{TFL}/StopPoint/{up.quote(stop_id, safe='')}", timeout=10)
+    r.raise_for_status()
+    return [l["id"] for l in r.json().get("lines", []) if l.get("id") in TUBE_LINES]
+
+
 def home(msg=""):
     s = load()
     body = msg
@@ -173,7 +195,8 @@ def home(msg=""):
     for i, x in enumerate(r):
         body += ('<li><form method="post" action="/drop" '
                  'style="display:flex;gap:10px;align-items:center">'
-                 f'<input type="hidden" name="i" value="{i}">'
+                 f'<input type="hidden" name="line" value="{esc(x["line"])}">'
+                 f'<input type="hidden" name="station_id" value="{esc(x["station_id"])}">'
                  f'<span style="flex:1">{esc(x["station_name"])}<br>'
                  f'<small style="margin:0">{esc(TUBE_LINES.get(x["line"], x["line"]))} line</small></span>'
                  # the last board cannot be removed: an empty rotation is a blank screen
@@ -248,9 +271,7 @@ def pick(stop_id, name, add=False):
     body = (f"<h2>{esc(name)}</h2>"
             f'<p>Which line?{" It joins the rotation as another board." if add else ""}</p>')
     try:
-        r = requests.get(f"{TFL}/StopPoint/{up.quote(stop_id)}", timeout=10)
-        r.raise_for_status()
-        lines = [l["id"] for l in r.json().get("lines", []) if l["id"] in TUBE_LINES]
+        lines = stop_lines(stop_id)
     except Exception as e:
         return body + f'<div class="err">TfL lookup failed: {esc(e)}</div><a class="btn alt" href="/">Back</a>'
     if not lines:
@@ -418,17 +439,15 @@ class H(BaseHTTPRequestHandler):
                 s[key] = hhmm(g(key), s.get(key, default))
         elif self.path == "/drop":
             r = rotation(s)
-            try:
-                i = int(g("i", "-1"))
-            except ValueError:
-                i = -1
-            if not 0 <= i < len(r):
+            # by identity, not position: a page loaded before a shell edit would
+            # otherwise remove whichever board had slid into that slot
+            keep = [x for x in r if not (x["line"] == g("line") and x["station_id"] == g("station_id"))]
+            if len(keep) == len(r):
                 return self._send('<div class="err">No such board.</div>' + home())
             if len(r) < 2:
                 return self._send('<div class="err">That is the only board. Pick another station '
                                   'instead of removing this one.</div>' + home())
-            del r[i]
-            set_rotation(s, r)
+            set_rotation(s, keep)
         elif self.path == "/rotate":
             try:
                 s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", "20"))))
@@ -478,17 +497,29 @@ def cli_resolve(q, line):
                          'Elizabeth line and Overground stops here.')
     exact = [m for m in matches if stop_name(m).lower() == q.strip().lower()]
     pool = exact or matches
+    # a hub and its own child can share a display name, and no typing tells them
+    # apart; keep the hub, because resolve_hub() knows how to narrow it to the line
+    byname = {}
+    for m in pool:
+        k = stop_name(m).lower()
+        if k not in byname or str(m["id"]).startswith("HUB"):
+            byname[k] = m
+    pool = list(byname.values())
     if len(pool) > 1:
         print(f'"{q}" matches several stops. Type one of these in full:')
         for m in pool[:LIMIT]:
             print("  " + stop_name(m))
         raise SystemExit(1)
     m = pool[0]
-    stop_id, name = m["id"], stop_name(m)
+    stop_id, name = str(m["id"]), stop_name(m)
     if stop_id.startswith("HUB"):
         stop_id, name = resolve_hub(stop_id, line, name)
         if not stop_id:
             raise SystemExit(f'The {TUBE_LINES[line]} line does not stop at {stop_name(m)}.')
+    elif line not in stop_lines(stop_id):
+        # the page only offers the lines TfL lists at the stop; the shell has to ask,
+        # because has_arrivals() takes an empty list at night on trust
+        raise SystemExit(f'The {TUBE_LINES[line]} line does not stop at {name}.')
     return stop_id, name
 
 
@@ -548,20 +579,30 @@ def main():
     # Every one of these edits settings.json and exits. The board picks the change up
     # within a refresh, with no restart: it watches the file.
     did = False
-    if a.add_station:
-        if not a.line:
-            raise SystemExit("--add-station needs --line, e.g. --line victoria")
-        cli_add(a.add_station, a.line)
-        did = True
-    if a.drop_station is not None:
-        cli_drop(a.drop_station)
-        did = True
-    if a.rotate is not None:
-        cli_rotate(a.rotate)
-        did = True
-    if a.list_stations and not did:
-        cli_list()
-        did = True
+    try:
+        if a.add_station is not None:
+            if not a.add_station.strip() or not a.line:
+                raise SystemExit("--add-station needs a name and --line, e.g. --line victoria")
+            cli_add(a.add_station, a.line)
+            did = True
+        elif a.line:
+            raise SystemExit("--line goes with --add-station")
+        if a.drop_station is not None:
+            cli_drop(a.drop_station)
+            did = True
+        if a.rotate is not None:
+            cli_rotate(a.rotate)
+            did = True
+        if a.list_stations and not did:
+            cli_list()
+            did = True
+    except requests.RequestException as e:
+        # the page says "TfL search failed"; a shell deserves one line too
+        raise SystemExit(f"TfL did not answer: {e}")
+    except OSError as e:
+        # the installer and the service write this file as root, so a shell
+        # without sudo can read it but not replace it
+        raise SystemExit(f"could not write {SETTINGS_PATH}: {e}. Run this with sudo.")
     if did:
         return
 

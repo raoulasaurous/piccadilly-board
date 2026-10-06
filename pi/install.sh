@@ -55,7 +55,6 @@ if head -n 1 "$CMD" | grep -q -- 'console=tty1'; then
 elif ! head -n 1 "$CMD" | grep -q -- 'console=tty[0-9]'; then
   sed -i "1s/\$/ console=tty3/" "$CMD"
 fi
-[ "$(cat "$CMD")" = "$CMD_WAS" ] || NEED_REBOOT=yes
 
 # Pin the screen's own EDID. Without this, cutting power to the MONITOR (a
 # blip, or someone switching the wall socket) makes the Pi re-ask the screen who
@@ -85,6 +84,11 @@ else
   echo "         run this installer again with the screen on, or a monitor"
   echo "         power cut will leave the board zoomed in."
 fi
+
+# Compare only now, after the EDID line is in: every edit above appends its token
+# at the end, so a comparison made before the last one sees a reordered line on
+# every re-run and asks for a reboot that changes nothing.
+[ "$(cat "$CMD")" = "$CMD_WAS" ] || NEED_REBOOT=yes
 
 CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
 grep -q '^hdmi_force_hotplug' "$CFG" || {
