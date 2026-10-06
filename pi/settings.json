@@ -16,6 +16,8 @@
   ],
   "rows": 5,
   "refresh_seconds": 30,
+  "stations": [],
+  "rotate_seconds": 20,
   "app_key": "",
   "brightness": 100,
   "brightness_dim": 30,

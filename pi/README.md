@@ -1,8 +1,8 @@
 # Tube board on a Raspberry Pi
 
-Live departure board for one Underground station, drawn straight to an HDMI
+Live departure board for an Underground station, drawn straight to an HDMI
 screen by a Raspberry Pi. No desktop, no browser. Data from TfL's open API,
-no key needed.
+no key needed. It can show one station or cycle through several.
 
 ## Files
 
@@ -10,10 +10,11 @@ no key needed.
 |---|---|
 | `board.py` | Fetches TfL every 30 s, draws the board with Pillow, writes it to `/dev/fb0` |
 | `portal.py` | Settings page on the home network: search a station, pick the line, save |
-| `settings.json` | Station, line, rows, refresh. The portal writes it, the board reloads it |
+| `settings.json` | Stations, lines, rows, refresh. The portal writes it, the board reloads it |
 | `install.sh` | One-shot install on Raspberry Pi OS Lite |
 | `bench.sh` | The power test: logs the Pi's under-voltage flag once a minute |
 | `*.service` | systemd units so both start at boot and restart if they die |
+| `test_rotation.py` | Offline tests for the rotation. TfL is stubbed, so it runs anywhere |
 
 ## Set up the card (on a Mac or PC)
 
@@ -37,8 +38,45 @@ at **http://tubeboard.local:8080** on any phone on the same WiFi.
 
 ## Change station
 
-Open http://tubeboard.local:8080, type a station name, tap it, tap the line. Done.
-The board redraws within a minute.
+Open http://tubeboard.local:8080, type a station name under **Show one station
+only**, tap it, tap the line. Done. The board redraws within a minute.
+
+## Show more than one station
+
+Under **Boards on the screen**, add a station. With two or more the screen cycles
+between them, holding each for 20 seconds, and a row of dots under the clock says
+which board is up and how many there are. **Remove** takes one off. Eight is the
+most, and the last one cannot be removed.
+
+A station on two lines is two boards: Highbury & Islington on the Victoria line
+and on the Mildmay line are added separately, and each gets its own roundel,
+colour and service status.
+
+Each board fetches on its own 30 s clock, only while it is the one being shown,
+so adding stations does not multiply the calls to TfL.
+
+### From a shell, when the page is out of reach
+
+The settings page only answers on the Pi's own network. When the board lives in
+someone else's house, a Raspberry Pi Connect shell does the same job:
+
+```bash
+cd /opt/tubeboard
+python3 portal.py --list-stations
+python3 portal.py --add-station "Highbury & Islington" --line victoria
+python3 portal.py --drop-station 2
+python3 portal.py --rotate 20
+```
+
+Run it in `/opt/tubeboard`, not in the git clone: the live settings are there.
+Each command edits `settings.json` and exits, and the board picks the change up
+within a refresh with no restart. Line ids are the ones in the URL on TfL's own
+site: `piccadilly`, `victoria`, `mildmay`, `windrush`, `elizabeth`, `dlr` and so
+on. The Overground is six named lines, not one.
+
+Only stops TfL gives arrivals for can be added, which means tube, DLR, Elizabeth
+line and Overground. National Rail stations are not in that feed: Drayton Park,
+for instance, is Great Northern, and nothing here can show it.
 
 ## If the WiFi changes
 
@@ -69,8 +107,15 @@ with no button pressed on the screen.
 
 ```bash
 python3 board.py --png out.png
+python3 board.py --png out.png --view 2   # the second board of the rotation
 ```
 Renders one frame with live data to a file. Works on a Mac.
+
+```bash
+python3 test_rotation.py
+```
+Checks the rotation with every TfL call stubbed, so it runs with no network at
+all. Worth running before deploying a change to how the boards are picked.
 
 ## A direction is missing from the screen
 
@@ -78,7 +123,8 @@ Renders one frame with live data to a file. Works on a Mac.
 python3 board.py --explain
 ```
 
-Prints what TfL answers for the configured station — how many predictions, on
+Prints what TfL answers for the configured station, and for every board on the
+rotation in turn — how many predictions, on
 which platforms, with which direction — and then the columns the board makes of
 them. That separates the two causes, which have different fixes:
 

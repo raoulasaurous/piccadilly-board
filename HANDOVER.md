@@ -5,6 +5,9 @@ two handovers: the cloud session that fixed the westbound report today, and the
 Mac session that built and bench-tested the hardware from 9 to 17 Sept. It
 covers the whole project. Most of it exists nowhere else in the repo.
 
+Updated 6 Oct 2026: the board can cycle through several stations. See "The
+rotation". Still not deployed, and still blocked on the same three measurements.
+
 **This repo is PUBLIC** (GitHub Pages serves `index.html`). Keep WiFi names,
 passwords, addresses and personal details out of it, including out of this file.
 
@@ -24,14 +27,16 @@ wall in a deep box frame with a card mount and no glass. The web version
 
 | Area | State |
 |---|---|
-| `main` | `1a54c1c`. PRs #1, #2 and #3 are all merged. No open PRs. |
+| `main` | `14ca63b`. PRs #1, #2 and #3 are all merged. |
 | The westbound fix | Merged. **Not deployed to the Pi.** |
+| The station rotation | Written 6 Oct, tested offline, **not deployed and never seen on the screen**. |
 | Where the Pi is | At a relative's house (per the 19 Sept cloud session), online and showing live trains |
 | Power | **Settled 17 Sept. Do not re-test.** One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Raspberry Pi Connect, signed in 14 Sept, still signed in on 17 Sept, survives reboots |
 | WiFi hand-over flow | Proven 14 Sept, but under the wrong hotspot name (see "Before it goes") |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed |
+| What the recipient wants to see | Arsenal (Piccadilly), Highbury & Islington (Victoria), and the Overground |
 | Frame and mount | **Blocked on three ruler measurements from Raoul** |
 
 The branch `claude/tube-board-westbound-missing-phq184` is fully merged. Work
@@ -53,11 +58,66 @@ redraws within about 30 seconds. For a change to the installer, the portal or
 `screen.py`, run `cd ~/piccadilly-board/pi && sudo SKIP_COMITUP=1 bash install.sh`
 instead. It copies all three files and restarts both services.
 
+The rotation changed `board.py` **and** `portal.py`, so deploying it is the
+installer run, not the one-file copy.
+
 **Nobody needs to be in the house.** Raspberry Pi Connect gives a shell from
 anywhere: Raoul opens connect.raspberrypi.com, picks `tubeboard`, opens the
 remote shell and pastes the commands. This works while the Pi is online and
 Connect is still signed in (it was on 17 Sept). The SSH key only works on the
 same network as the Pi.
+
+## The rotation
+
+`settings.json` grew two keys: `stations`, a list of
+`{line, station_id, station_name}`, and `rotate_seconds`. An empty list means one
+board, built from the old top-level `line` and `station_id`, which is every
+install made before this. So an old settings file still works untouched, and the
+portal keeps those top-level keys pointing at the first board on the rotation -
+deploy the new page without the new `board.py` and the screen still shows a real
+station rather than nothing.
+
+`station_views()` turns the settings into one flat settings dict per board, so
+`fetch()` and `render()` never learned there is more than one. Each board keeps
+its own data, its own last-updated time and its own failure count, keyed by line
+and stop, so editing the list does not throw away what the surviving boards had.
+
+The loop draws before it fetches. A switch therefore never waits on the network:
+the station that comes up is the one already in hand, and its own refresh lands
+straight after. Fetching first would let a ten-second TfL timeout hold the old
+station on the screen and stop the clock mid-rotation.
+
+Each board is fetched only while it is the one on screen, on its own 30 s clock,
+so three stations do not treble the calls to TfL.
+
+A row of dots under the clock says which board is up and how many there are.
+Without them a station changing on its own reads as the board losing its place.
+
+Editing the list needs no screen and no restart:
+
+```bash
+cd /opt/tubeboard
+python3 portal.py --list-stations
+python3 portal.py --add-station "Highbury & Islington" --line victoria
+python3 portal.py --drop-station 2
+python3 portal.py --rotate 20
+```
+
+**Run it in `/opt/tubeboard`**, the same trap as `--explain`: the clone holds only
+the repo default. The portal page has the same controls for anyone on the Pi's
+own network, but the Pi is not on ours, so the shell is the way in.
+
+`pi/test_rotation.py` tests all of it with TfL stubbed, which is the only way to
+test anything here from a cloud session. `cd pi && python3 test_rotation.py`.
+
+**Drayton Park cannot be shown, and it is not a bug to fix.** It is Great
+Northern, a National Rail station on the Northern City Line, not Overground.
+TfL's unified API carries arrivals for tube, DLR, Elizabeth line and Overground
+only, so there is nothing to draw from. Showing it would mean a second data
+source (Darwin, or the Rail Data Marketplace) and a key. The nearest thing in the
+TfL feed is Highbury & Islington on the Mildmay and Windrush lines, a few minutes
+up the road. Ask before building the National Rail path: it is a whole second
+feed for one station.
 
 ## Where things live
 
@@ -230,9 +290,11 @@ In rough order:
    Park" collides with "7 min". The destination is drawn without `clip()`.
 5. `clip()` adds "..." after text that already ends in a full stop, which gives
    four dots (visible in the status line quoted above).
-6. `pi/__pycache__/*.pyc` are tracked in git by mistake. Remove them and add
-   them to `.gitignore`.
-7. The physical build (below), which waits on Raoul's measurements.
+6. ~~`pi/__pycache__/*.pyc` tracked in git.~~ Done 6 Oct: untracked and ignored.
+7. `index.html` shows one station and cannot rotate. The Pi board can. If the web
+   version is meant to keep up, that is the second thing it owes the Pi board,
+   after the direction fallback above.
+8. The physical build (below), which waits on Raoul's measurements.
 
 ## Physical build
 

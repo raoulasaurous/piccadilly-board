@@ -43,6 +43,12 @@ DEFAULTS = {
     ],
     "rows": 5,
     "refresh_seconds": 30,
+    # More than one board. Each entry is {"line", "station_id", "station_name"} and
+    # the screen shows each in turn for rotate_seconds. An empty list means one
+    # board, built from the line and station_id above, which is what every install
+    # before the rotation had.
+    "stations": [],
+    "rotate_seconds": 20,
     "app_key": "",
     # Screen brightness, driven over the HDMI cable. Once the monitor is in the
     # frame its own buttons are unreachable, so this is the only way to change it.
@@ -128,6 +134,43 @@ class Settings:
 
     def __getitem__(self, k):
         return self.data[k]
+
+
+def station_views(settings):
+    """The boards to show, in order, one flat settings dict each.
+
+    fetch() and render() both read the station out of a settings dict, so a rotation
+    is just a list of those dicts with the station keys swapped. Nothing downstream
+    needs to know whether there is one board or five. An empty "stations" list gives
+    a single view built from the top-level line and station_id, which is every
+    install made before this existed."""
+    views = []
+    for st in settings["stations"] or []:
+        if not isinstance(st, dict):
+            continue
+        line = str(st.get("line") or "").strip()
+        stop = str(st.get("station_id") or "").strip()
+        if not line or not stop:
+            # silently skipping it would draw an empty board with nothing to explain it
+            print("settings: station with no line or id, skipped:", st,
+                  file=sys.stderr, flush=True)
+            continue
+        v = dict(settings.data)
+        v["line"] = line
+        v["station_id"] = stop
+        v["station_name"] = str(st.get("station_name") or stop)
+        # Platform labels are per station: TfL names them differently at each, so a
+        # rotation cannot share one set of columns.
+        v["columns"] = st.get("columns") or [dict(c) for c in DEFAULTS["columns"]]
+        views.append(v)
+    if not views:
+        views.append(dict(settings.data))
+    return views
+
+
+def view_key(v):
+    """What makes two boards the same board, for the per-board data cache."""
+    return v["line"], v["station_id"]
 
 
 # ---------------------------------------------------------------- TfL
@@ -573,7 +616,7 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           ss=2):
+           rotation=None, ss=2):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -581,7 +624,7 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     ss=1 skips it, for a slow machine."""
     if ss > 1:
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
-                     status_why, now, updated, live, ss=1)
+                     status_why, now, updated, live, rotation=rotation, ss=1)
         return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -607,6 +650,22 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     clock = now.strftime("%H:%M")
     fc = font("light", 5.4 * u)
     d.text((W - pad, cy), clock, font=fc, fill=WHITE, anchor="rm")
+    # One dot per board on the rotation, the current one filled. Without them a
+    # station that changes on its own looks like the board losing its place, and
+    # someone waiting for their own station cannot tell whether it is still coming.
+    if rotation and rotation[1] > 1:
+        here, total = rotation
+        dr = 0.42 * u
+        step_d = 1.5 * u
+        dy = pad + 6.45 * u
+        last = W - pad - dr
+        for i in range(total):
+            dx = last - (total - 1 - i) * step_d
+            box = [dx - dr, dy - dr, dx + dr, dy + dr]
+            if i == here:
+                d.ellipse(box, fill=WHITE)
+            else:
+                d.ellipse(box, outline=DIM, width=max(1, round(0.13 * u)))
     rule_y = pad + 7.3 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
@@ -769,18 +828,29 @@ def main():
     ap.add_argument("--size", default="1920x1080", help="frame size for --png")
     ap.add_argument("--explain", action="store_true",
                     help="print what TfL returns for this station and how it is split "
-                         "into columns, then exit")
+                         "into columns, then exit. Every board on the rotation, in turn")
+    ap.add_argument("--view", type=int, default=1,
+                    help="which board of the rotation --png draws (1 is the first)")
     args = ap.parse_args()
 
     settings = Settings()
+    views = station_views(settings)
     if args.explain:
-        explain(settings)
+        for i, v in enumerate(views):
+            if i:
+                print("\n" + "-" * 70 + "\n")
+            if len(views) > 1:
+                print(f"Board {i + 1} of {len(views)}")
+            explain(v)
         return
     if args.png:
-        W, H = (int(v) for v in args.size.split("x"))
-        cols, status, status_ok, status_why = fetch(settings)
+        i = max(0, min(len(views) - 1, args.view - 1))
+        v = views[i]
+        W, H = (int(n) for n in args.size.split("x"))
+        cols, status, status_ok, status_why = fetch(v)
         now = dt.datetime.now()
-        render(W, H, settings, cols, status, status_ok, status_why, now, now, True).save(args.png)
+        render(W, H, v, cols, status, status_ok, status_why, now, now, True,
+               rotation=(i, len(views))).save(args.png)
         print("wrote", args.png, flush=True)
         return
 
@@ -791,35 +861,26 @@ def main():
         for msg in screen.apply(settings.data, dt.datetime.now(), force=True):
             print("screen:", msg, flush=True)
     last_screen = 0.0
-    cols, status, status_ok, status_why, updated, live = [], None, False, "", None, False
-    # draw once before the first fetch: a blank wall screen reads as a dead unit, and
-    # with no WiFi the first request can hold for its full ten seconds
-    fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
-    last_fetch = 0.0
-    failures = 0
+    idx = 0
+    last_rotate = time.time()
+    # One entry per board, keyed by line and stop rather than by position, so
+    # editing the rotation keeps the data for the stations that stayed in it.
+    boards = {}
     draw_failures = 0
-    while True:
-        changed_settings = settings.reload()
-        t = time.time()
-        # Nudge the screen every 30 s, and at once if the settings just changed.
-        if screen and (changed_settings or t - last_screen >= 30):
-            last_screen = t
-            for msg in screen.apply(settings.data, dt.datetime.now(),
-                                    force=changed_settings):
-                print("screen:", msg, flush=True)
-        if t - last_fetch >= settings["refresh_seconds"] or not cols:
-            last_fetch = t
-            try:
-                cols, status, status_ok, status_why = fetch(settings)
-                updated, live, failures = dt.datetime.now(), True, 0
-            except Exception as e:
-                failures += 1
-                print("fetch failed:", e, file=sys.stderr, flush=True)
-                # keep showing the last board; after ~3 minutes of failures say so
-                if failures >= max(1, 180 // settings["refresh_seconds"]):
-                    live = False
+
+    def cached(v):
+        return boards.setdefault(view_key(v), {
+            "cols": [], "status": None, "status_ok": False, "status_why": "",
+            "updated": None, "live": False, "last_fetch": 0.0, "failures": 0})
+
+    def draw(v, b, rotation):
+        """Put one board on the screen. Draw failures are counted here because the
+        loop now draws twice a refresh, and five in a row is still the give-up point."""
+        nonlocal draw_failures
         try:
-            fb.show(render(fb.w, fb.h, settings, cols, status, status_ok, status_why, dt.datetime.now(), updated, live))
+            fb.show(render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
+                           b["status_why"], dt.datetime.now(), b["updated"], b["live"],
+                           rotation=rotation))
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
@@ -829,12 +890,63 @@ def main():
             if draw_failures >= 5:
                 print("giving up on the screen, restarting", file=sys.stderr, flush=True)
                 raise SystemExit(1)
+
+    while True:
+        changed_settings = settings.reload()
+        if changed_settings:
+            views = station_views(settings)
+            if idx >= len(views):
+                idx = 0
+        t = time.time()
+        # Nudge the screen every 30 s, and at once if the settings just changed.
+        if screen and (changed_settings or t - last_screen >= 30):
+            last_screen = t
+            for msg in screen.apply(settings.data, dt.datetime.now(),
+                                    force=changed_settings):
+                print("screen:", msg, flush=True)
+        try:
+            rotate_s = max(5, min(300, int(settings["rotate_seconds"])))
+        except (TypeError, ValueError):
+            # settings.json can be edited by hand. A bad number here must not put
+            # the board in a restart loop on a wall nobody can reach.
+            rotate_s = 20
+        if len(views) > 1 and t - last_rotate >= rotate_s:
+            idx = (idx + 1) % len(views)
+            last_rotate = t
+        v = views[idx]
+        b = cached(v)
+        rotation = (idx, len(views))
+        # Draw first, fetch second. Switching boards then never waits on the network:
+        # the station that comes up is the one already in hand, and its own refresh
+        # lands straight after. Fetching first would let a ten-second TfL timeout
+        # hold the old station on the screen and stop the clock mid-rotation. On a
+        # cold boot this is also the blank-looking first frame, which beats a dead
+        # screen while the first request runs.
+        draw(v, b, rotation)
+        if t - b["last_fetch"] >= settings["refresh_seconds"] or not b["cols"]:
+            b["last_fetch"] = t
+            try:
+                b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
+                b["updated"], b["live"], b["failures"] = dt.datetime.now(), True, 0
+                draw(v, b, rotation)
+            except Exception as e:
+                b["failures"] += 1
+                # name the board: with a rotation, "fetch failed" alone does not say
+                # which station is the one that cannot be reached
+                print(f'fetch failed ({v["station_name"]}, {v["line"]}):', e,
+                      file=sys.stderr, flush=True)
+                # keep showing the last board; after ~3 minutes of failures say so
+                if b["failures"] >= max(1, 180 // settings["refresh_seconds"]):
+                    b["live"] = False
         # Redraw every 10 s. The clock only needs a minute, but the "updated Xs
         # ago" line has to keep up or it is quietly lying, and a frame costs
-        # about a third of a second on a Pi 3.
-        time.sleep(max(1.0, min(10.0,
-                                60.0 - dt.datetime.now().second,
-                                settings["refresh_seconds"] - (time.time() - last_fetch))))
+        # about a third of a second on a Pi 3. With a rotation, wake for the
+        # switch too, or a 20 s rotation drifts by up to ten.
+        waits = [10.0, 60.0 - dt.datetime.now().second,
+                 settings["refresh_seconds"] - (time.time() - b["last_fetch"])]
+        if len(views) > 1:
+            waits.append(rotate_s - (time.time() - last_rotate))
+        time.sleep(max(1.0, min(waits)))
 
 
 if __name__ == "__main__":
