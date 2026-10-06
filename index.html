@@ -1,3 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Piccadilly Line Board</title>
 <meta name="description" content="Live Piccadilly line departures from Arsenal, from the TfL Unified API.">
 <meta property="og:type" content="website">
@@ -147,7 +150,7 @@
   .status .lbl{color:var(--dim);font-weight:300}
   .status .val{color:var(--good);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .status .val.bad{color:var(--time)}
-  .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block}
+  .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block;color:var(--good)}
   .src{color:var(--dimmer);font-weight:300;flex:0 0 auto;display:flex;align-items:center;gap:1cqw}
   .mode{
     font-size:.82em;
@@ -238,10 +241,9 @@
     <div class="status">
       <span class="lbl">Status:</span>
       <svg class="tick" viewBox="0 0 20 20" role="img" aria-label="status icon" id="tick">
-        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"
-                style="color:var(--good)"></circle>
-        <path d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round" style="color:var(--good)"></path>
+        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+        <path id="tickPath" d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
       <span class="val" id="status">Good Service</span>
     </div>
@@ -255,7 +257,8 @@
 
 <script>
 // ---------------------------------------------------------------------
-// CONFIG - change these three lines for a different station or line.
+// CONFIG - change these lines for a different station on the Piccadilly line.
+// The line's name, colour and roundel are in the markup and the CSS above.
 // Find a station id: https://api.tfl.gov.uk/StopPoint/Search/{name}?modes=tube
 // ---------------------------------------------------------------------
 const LINE       = "piccadilly";
@@ -293,8 +296,7 @@ function tidy(name) {
   // one tail only: stripping twice turns "Battersea Power Station Underground
   // Station" into "Battersea Power"
   return String(name || "")
-    .replace(/\s+(Underground|Rail|DLR)\s+Station$/i, "")
-    .replace(/\s+Station$/i, "")
+    .replace(/\s+((Underground|Rail|DLR)\s+)?Station$/i, "")
     .trim();
 }
 
@@ -302,6 +304,22 @@ function label(mins) {
   if (mins <= 0) return "due";
   return mins + " min";
 }
+
+// When the trains on screen were fetched; null until the first live load. The
+// honest health line: a clock time just sits there looking plausible.
+let lastGood = null;
+function ago(then, now) {
+  const s = Math.max(0, Math.floor((now - then) / 1000));
+  if (s < 10) return "just now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h ago";
+}
+
+// The tick and the bang are drawn, not typed: a font without the glyph would put
+// an empty box on the page and nobody would know why.
+const TICK_D = "M6.2 10.3 L8.9 13 L13.9 7.2";
+const BANG_D = "M10 5.5 V11.2 M10 13.6 V14.4";
 
 // ---------------------------------------------------------------------
 // Putting trains in columns. A port of pi/board.py's group(), split_by(),
@@ -529,19 +547,27 @@ function showSample() {
 }
 
 function tickClock() {
-  $("clock").textContent = hhmm(new Date());
+  const now = new Date();
+  $("clock").textContent = hhmm(now);
+  if (lastGood) $("updated").textContent = ago(lastGood, now);
 }
 
 async function load() {
   const q = APP_KEY ? "?app_key=" + encodeURIComponent(APP_KEY) : "";
   const base = "https://api.tfl.gov.uk/Line/" + LINE;
 
-  const [arrivals, status] = await Promise.all([
-    fetch(base + "/Arrivals/" + STATION_ID + q).then((r) => r.json()),
-    fetch(base + "/Status" + q).then((r) => r.json())
-  ]);
-
+  const arrivals = await fetch(base + "/Arrivals/" + STATION_ID + q).then((r) => r.json());
   if (!Array.isArray(arrivals)) throw new Error("unexpected arrivals response");
+
+  // The status is a separate question: a rate limit or a bad body here must not
+  // lose the trains, and a status we never read must not be drawn as a green tick.
+  let s = null;
+  try {
+    const st = await fetch(base + "/Status" + q).then((r) => r.json());
+    if (Array.isArray(st)) s = worstStatus(st);
+  } catch (e) {
+    console.warn("status fetch failed:", e);
+  }
 
   arrivals.sort((a, b) => a.timeToStation - b.timeToStation);
   // the headings come from the trains themselves, as on the Pi board: EASTBOUND
@@ -555,15 +581,17 @@ async function load() {
     paint("col" + id, col ? col.rows : [], !!col);
   });
 
-  const s = worstStatus(status);
-  const text = (s && s.statusSeverityDescription) || "Good Service";
+  const text = s ? s.statusSeverityDescription : "Service status unknown";
   const why = s ? tidyReason(s.reason) : "";
+  const good = !!s && ["good service", "no issues"].includes(text.toLowerCase());
   const el = $("status");
   el.textContent = why ? text + " - " + why : text;
-  el.classList.toggle("bad", text.toLowerCase() !== "good service");
-  $("tick").style.color = text.toLowerCase() === "good service" ? "" : "var(--time)";
+  el.classList.toggle("bad", !good);
+  $("tick").style.color = good ? "" : "var(--time)";
+  $("tickPath").setAttribute("d", good ? TICK_D : BANG_D);
 
-  $("updated").textContent = hhmm(new Date());
+  lastGood = new Date();
+  $("updated").textContent = ago(lastGood, lastGood);
   const mode = $("mode");
   mode.textContent = "live";
   mode.classList.add("live");
@@ -573,10 +601,12 @@ async function refresh() {
   try {
     await load();
   } catch (e) {
-    // Offline, rate limited, or running somewhere that blocks the request:
-    // keep the sample board on screen and say plainly that it is a sample.
+    // Offline, rate limited, or running somewhere that blocks the request. Before
+    // the first live load the board on screen is the sample; after it, it is the
+    // last live board, with "Last updated" counting up to say how old.
+    console.warn("refresh failed:", e);
     const mode = $("mode");
-    mode.textContent = "sample data";
+    mode.textContent = lastGood ? "no live data" : "sample data";
     mode.classList.remove("live");
   }
 }
