@@ -29,8 +29,8 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | **What the Pi runs** | **The code from before PR #1.** Nothing merged since 19 Sept has been deployed: not the westbound fix, not the rotation, nothing from tonight. |
 | The Pi itself | **Unplugged by Raoul on the evening of 6 Oct.** Whether `shutdown -h` ran first is not recorded. A brownout corrupted the card once before; if the board does not come up, suspect the card first. Where it is plugged in next is Raoul's call. |
 | What the recipient wants on it | Highbury & Islington (Victoria line), Drayton Park (Great Northern), and Arsenal as it is. Rotation 30 s. |
-| National Rail key | **Not yet obtained.** Raoul registers at raildata.org.uk (below). Without it the Drayton Park board says so on the screen and shows nothing else. |
-| Tested | 159 offline checks (`pi/test_rotation.py`) and 18 in headless Chrome (`test_index.py`) pass. Two review passes, 62 findings reproduced and fixed. **Nothing from tonight has run on the Pi, and the rail client has never called the real feed.** |
+| National Rail key | **Obtained 7 Oct** (Raoul's raildata.org.uk account, Live Departure Board, consumer key; not in the repo). Goes into the Pi with `portal.py --rail-key`. Without it the Drayton Park board says so on the screen and shows nothing else. |
+| Tested | 163 offline checks (`pi/test_rotation.py`) and 18 in headless Chrome (`test_index.py`) pass. Two review passes, 62 findings reproduced and fixed. **7 Oct, from the Mac:** the rail client met the real feed (three fixes, below) and both the Arsenal and the Drayton Park boards rendered from live data. **Nothing has yet run on the Pi.** |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Raspberry Pi Connect, signed in 14 Sept, still signed in on 17 Sept, survives reboots |
@@ -50,11 +50,10 @@ cd .. && python3 test_index.py               # the web version, in headless Chro
 
 Then, in this order:
 
-1. **Get the rail key.** Account at raildata.org.uk, subscribe to the public
-   **Live Departure Board** product, copy the consumer key. Then the first live
-   call the rail client has ever made: `python3 rail.py DYP THEKEY`. It prints the
-   feed's own account of Drayton Park and what the board makes of it. If the URL
-   is refused, the product path has moved: see "National Rail boards" below.
+1. ~~Get the rail key.~~ Done 7 Oct. `python3 rail.py DYP THEKEY` prints the
+   feed's own account of Drayton Park and what the board makes of it; it worked
+   from the Mac. If the URL is ever refused again, the product path has moved: see
+   "National Rail boards" below.
 2. **Deploy** (next section). The Pi must be plugged in and online.
 3. **Add the stations** over the same shell (in the deploy section).
 4. Ask for a photo of the screen. Nobody has seen any of this on the real one.
@@ -162,17 +161,30 @@ Board service through the Rail Data Marketplace:
   TfL's: it publishes one for the operators under the same line ids.
 - The key is `rail_api_key` in `settings.json`; `rail_api_url` overrides the
   base URL if the product path moves (it has moved once before). The default is
-  `https://api1.raildata.org.uk/1010-live-departure-board-dep/LDBWS/api/20220120`.
+  `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120`,
+  the one the product's Specification tab publishes. The old `-dep` path answers
+  401 "Invalid ApiKey for given resource" to a good key.
 - The roundel bar says NATIONAL RAIL. It is TfL's mark with the wrong words on
   it, chosen so the header stays one shape; Raoul may want the double arrow.
 
-**Written blind.** The feed's JSON field names are taken from the SOAP-era
-schema, which the REST version mirrors, and `_get()` accepts both camelCase and
-PascalCase. The `via` field is assumed to carry the word ("via Hertford North"),
-as Darwin's reference data does; the code strips it, and is a no-op if the feed
-sends the bare place. If the first live call shows different names, `rail.py`
-is the one file to fix, and `test_rotation.py`'s `RAIL_BOARD` is the shape to
-correct.
+**Seen live on 7 Oct 2026**, from the Mac, with Raoul's key. The field names
+were as written (`trainServices`, `std`, `etd`, `platform`, `isCancelled`,
+`serviceID`, `destination[].locationName`, `via` with the word in it, `generatedAt`).
+Three things were not, and are fixed:
+
+1. The product path is `-dep1_2`, not `-dep` (above).
+2. The gateway answers the `python-requests` user agent with a 403 HTML page and
+   nothing else; any other name gets the board. `fetch()` sends `tubeboard/1.0`.
+   A 403 from this feed is therefore a client problem, never the key.
+3. `generatedAt` carries an offset (`+01:00`) and seven decimals. `feed_time()`
+   drops the offset instead of converting through the Pi's timezone, so the
+   feed's clock and its `std`/`etd` stay on the same clock on a Pi left on UTC.
+
+Also: `nrccMessages` are `[{"Value": "<p>…</p>"}]` with `&nbsp;` entities, now
+unescaped. `test_rotation.py`'s `RAIL_BOARD` is the live shape with made-up
+trains. That morning DYP showed 15 services, Moorgate trains on platform 1
+(Southbound), Welwyn / Hertford / Stevenage on platform 2 (Northbound), and the
+columns came out that way.
 
 ## The WiFi screen and the diagnosis
 
@@ -303,7 +315,7 @@ In rough order:
    fixed to the Piccadilly in the markup. The direction bug it carried since
    19 Sept is fixed as of tonight. A one-destination board (the DLR shape) leaves
    its second column blank where the Pi goes full width.
-4. **The rail board's finer points, once the feed has been seen live:** a
+4. **The rail board's finer points** (the feed has now been seen live): a
    cancelled train is dropped rather than shown struck through; the roundel says
    NATIONAL RAIL; London termini are a hand-kept list in `rail.py`.
 5. The physical build (below), which waits on Raoul's measurements.

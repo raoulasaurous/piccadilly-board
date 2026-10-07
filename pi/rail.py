@@ -15,6 +15,7 @@ there is a second feed. Pure functions parse; one function talks to the network.
     python3 rail.py DYP <key>      # print what the feed says for a station
 """
 import datetime as dt
+import html
 import re
 import sys
 import urllib.parse as up
@@ -22,9 +23,11 @@ import urllib.parse as up
 import requests
 
 # The REST version of the old OpenLDBWS SOAP service, same field names. The product
-# path has moved once already (a "_2" was added for a while), so the base is a
-# setting (rail_api_url) and this is only its default.
-DEFAULT_URL = "https://api1.raildata.org.uk/1010-live-departure-board-dep/LDBWS/api/20220120"
+# path has moved once already (from "-dep" to "-dep1_2"; the old one answers 401
+# "Invalid ApiKey for given resource"), so the base is a setting (rail_api_url) and
+# this is only its default. Seen live from the Mac on 7 Oct 2026.
+DEFAULT_URL = "https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120"
+USER_AGENT = "tubeboard/1.0 (+https://github.com/raoulasaurous/piccadilly-board)"
 
 class KeyProblem(ValueError):
     """No key, or one the feed refused. A settings problem, not a network one: the
@@ -83,7 +86,10 @@ def fetch(crs, key, base=None, rows=15, timeout=10):
     if not key:
         raise KeyProblem("no rail key: get one free at raildata.org.uk (Live Departure Board), "
                          "then sudo python3 portal.py --rail-key YOURKEY")
-    r = requests.get(url_for(base, crs, rows), headers={"x-apikey": key}, timeout=timeout)
+    # The marketplace gateway answers a plain "python-requests" user agent with a
+    # 403 page and nothing else (seen 7 Oct 2026); any other name gets the board.
+    r = requests.get(url_for(base, crs, rows), headers={"x-apikey": key, "User-Agent": USER_AGENT},
+                     timeout=timeout)
     if r.status_code in (401, 403):
         raise KeyProblem(f"the rail feed refused the key (HTTP {r.status_code})")
     r.raise_for_status()
@@ -144,15 +150,20 @@ def _destinations(service):
 
 
 def feed_time(board):
-    """The feed's own clock as local wall time, or None. The Pi has no clock battery:
-    for the first moments after a power cut its clock is whatever was saved at the
-    last shutdown, and a board measured against that would read "182 min" until NTP
-    steps it. The feed knows what time it is; the Pi only thinks it does."""
+    """The feed's own clock as wall time, or None. The Pi has no clock battery: for
+    the first moments after a power cut its clock is whatever was saved at the last
+    shutdown, and a board measured against that would read "182 min" until NTP steps
+    it. The feed knows what time it is; the Pi only thinks it does.
+
+    The feed writes generatedAt with its own offset ("...09:08:24.5485962+01:00") and
+    std/etd as bare London clock times. The offset is dropped, not converted: that
+    keeps the two on the same clock whatever timezone the Pi was set up in. Converted
+    through a Pi left on UTC, every train would read an hour away."""
     try:
         t = dt.datetime.fromisoformat(str(_get(board, "generatedAt") or ""))
     except ValueError:
         return None
-    return t.astimezone().replace(tzinfo=None) if t.tzinfo else t
+    return t.replace(tzinfo=None)
 
 
 def predictions(board, now, line):
@@ -209,11 +220,12 @@ def predictions(board, now, line):
 
 
 def messages(board):
-    """Station notices, as plain text. The feed sends them as HTML fragments."""
+    """Station notices, as plain text. The feed sends them as HTML fragments, each
+    under a "Value" key (seen live; the SOAP schema called it xhtmlMessage)."""
     out = []
     for m in _get(board, "nrccMessages", default=[]) or []:
         text = m if isinstance(m, str) else (_get(m, "xhtmlMessage", "value", "Value") or "")
-        text = re.sub(r"<[^>]+>", " ", str(text))
+        text = html.unescape(re.sub(r"<[^>]+>", " ", str(text)))   # the feed writes &nbsp;
         text = re.sub(r"\s+", " ", text).strip()
         if text:
             out.append(text)

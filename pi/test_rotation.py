@@ -24,6 +24,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import urllib.parse as up
 
@@ -126,24 +127,35 @@ def board_get(url, params=None, timeout=None):
 board.requests = stub(board_get)
 
 # The National Rail feed, as the Rail Data Marketplace sends it, for Drayton Park.
+# The shape the live feed sent for DYP on 7 Oct 2026 (field names, the "Value"
+# notice, generatedAt with its offset and seven decimals), with the trains made up
+# to cover the cases: two the same minute, a cancellation, "Delayed" with and
+# without its time gone, and a via.
 RAIL_BOARD = {
-    "locationName": "Drayton Park", "crs": "DYP", "generatedAt": "2026-10-07T08:10:00",
-    "nrccMessages": [{"xhtmlMessage": "<p>Lifts at Highbury are out of order.</p>"}],
+    "locationName": "Drayton Park", "crs": "DYP", "generatedAt": "2026-10-07T08:10:00.0000000+01:00",
+    "filterType": "to", "areServicesAvailable": True, "platformAvailable": True,
+    "nrccMessages": [{"Value": "<p>Lifts at&nbsp;Highbury are out of order. See the "
+                               "<a href=\"https://www.nationalrail.co.uk/\">National Rail website</a>.</p>"}],
     "trainServices": [
         {"std": "08:12", "etd": "On time", "platform": "2", "operator": "Great Northern",
-         "serviceID": "a1", "destination": [{"locationName": "Moorgate", "crs": "MOG"}]},
+         "operatorCode": "GN", "isCancelled": False, "serviceType": "train", "length": 6,
+         "serviceID": "a1", "origin": [{"locationName": "Welwyn Garden City", "crs": "WGC"}],
+         "destination": [{"locationName": "Moorgate", "crs": "MOG", "assocIsCancelled": False}]},
         # a second service to Moorgate expected the same minute: two trains, not one
         {"std": "08:11", "etd": "08:12", "platform": "2", "operator": "Great Northern",
+         "operatorCode": "GN", "isCancelled": False,
          "serviceID": "a0", "destination": [{"locationName": "Moorgate", "crs": "MOG"}]},
         {"std": "08:14", "etd": "08:17", "platform": "1", "operator": "Great Northern",
+         "operatorCode": "GN", "isCancelled": False,
          "serviceID": "b2", "destination": [{"locationName": "Welwyn Garden City", "crs": "WGC"}]},
         {"std": "08:20", "etd": "Cancelled", "platform": "1", "isCancelled": True,
+         "operatorCode": "GN",
          "serviceID": "c3", "destination": [{"locationName": "Hertford North", "crs": "HFN"}]},
         # "Delayed" with no estimate, and its timetable time has gone: still a train
-        {"std": "08:05", "etd": "Delayed", "platform": "1", "serviceID": "e5",
+        {"std": "08:05", "etd": "Delayed", "platform": "1", "serviceID": "e5", "isCancelled": False,
          "destination": [{"locationName": "Hertford North", "crs": "HFN"}]},
-        # the feed's via text already carries the word
-        {"std": "08:22", "etd": "Delayed", "platform": "1", "serviceID": "d4",
+        # the feed's via text already carries the word (live: "via Hertford North")
+        {"std": "08:22", "etd": "Delayed", "platform": "1", "serviceID": "d4", "isCancelled": False,
          "destination": [{"locationName": "Stevenage", "crs": "SVG", "via": "via Hertford North"}]},
     ]}
 rail_calls = []
@@ -245,6 +257,28 @@ def test_rail_board():
     check("the feed was asked with the key in the header",
           bool(rail_calls) and rail_calls[-1][1].get("x-apikey") == "k-test"
           and "/GetDepartureBoard/DYP" in rail_calls[-1][0], rail_calls[-1:])
+    check("and under the board's own name: the gateway answers python-requests with a 403 page",
+          rail_calls[-1][1].get("User-Agent", "").startswith("tubeboard/"), rail_calls[-1][1])
+    check("the default path is the one the marketplace publishes",
+          "/1010-live-departure-board-dep1_2/LDBWS/api/20220120/" in rail_calls[-1][0], rail_calls[-1][0])
+    # the feed's clock is read on the feed's own zone, whatever the Pi was set up in
+    saved_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "UTC"; time.tzset()
+        on_utc = rail.feed_time(RAIL_BOARD)
+        os.environ["TZ"] = "Europe/London"; time.tzset()
+        on_london = rail.feed_time(RAIL_BOARD)
+    finally:
+        if saved_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = saved_tz
+        time.tzset()
+    check("the feed's own clock is the same on a UTC Pi and a London one",
+          on_utc == on_london == dt.datetime(2026, 10, 7, 8, 10, 0, 0), (on_utc, on_london))
+    check("a notice reads as text: tags and entities gone",
+          rail.messages(RAIL_BOARD) == ["Lifts at Highbury are out of order. See the National Rail website ."],
+          rail.messages(RAIL_BOARD))
     check("two columns, named by the compass for the line",
           [c["label"] for c in cols] == ["SOUTHBOUND", "NORTHBOUND"], [c["label"] for c in cols])
     check("the southbound column says where it goes",
