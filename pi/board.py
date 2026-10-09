@@ -946,11 +946,17 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     col_w = (W - 2 * pad - gap * (n - 1)) / n
     rows_n = max(1, settings["rows"])
     rows_top = top + 3.2 * u
-    # Spaced as five rows whatever the count, and the text the same size: fewer rows
-    # keep the places the first ones had, under their heading, and the spare space
-    # falls at the bottom, where the rotation's dots sit (Raoul, 9 Oct 2026: four
-    # trains, not five). Centred, the four floated away from their headings.
-    step = (foot_rule - 1.2 * u - rows_top) / max(5, rows_n)
+    # The text is the same size whatever the count. Fewer than five rows sit under
+    # their heading a little lower than the five did, and a little further apart;
+    # the spare space falls at the bottom, where the rotation's dots sit. Raoul,
+    # 9 Oct 2026, on the real screen: four trains, not five; centred they floated
+    # away from their headings; at five's spacing, tight under the heading, they
+    # wanted to come down a little and open up a little.
+    area = foot_rule - 1.2 * u - rows_top
+    step = area / max(5, rows_n)
+    if rows_n < 5:
+        step = min(area / rows_n, step * ROW_OPEN)
+        rows_top += min(ROW_DROP * u, (area - step * rows_n) / 2)
     for i, c in enumerate(cols):
         x0 = pad + i * (col_w + gap)
         if i:
@@ -1154,6 +1160,11 @@ def pack565(img):
 # How long the footer shows the settings address once the board has one (Raoul, 9 Oct
 # 2026: one minute; it was three, and squeezed the status line for all of them).
 ADDRESS_SECONDS = 60
+
+# Fewer than five rows: how much further apart than five's spacing, and how far
+# down from where five's first row sits, in hundredths of the screen's width.
+ROW_OPEN = 1.08
+ROW_DROP = 1.0
 
 
 class Ticker:

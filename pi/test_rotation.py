@@ -1211,10 +1211,12 @@ def test_ticker():
     five, four = dots(5), dots(4)
     gaps5 = [b - a for a, b in zip(five, five[1:])]
     gaps4 = [b - a for a, b in zip(four, four[1:])]
-    check("four rows: four trains, at the five-row spacing", len(four) == 4 and len(five) == 5
-          and max(abs(g - gaps5[0]) for g in gaps4 + gaps5) <= 1, (gaps5, gaps4))
-    check("under their heading, where the first four were with five",
-          abs(four[0] - five[0]) <= 1 and abs(four[-1] - five[3]) <= 1, (four, five))
+    check("four rows: four trains, evenly spaced, a little further apart than five",
+          len(four) == 4 and len(five) == 5 and max(gaps4) - min(gaps4) <= 1
+          and 1.06 <= gaps4[0] / gaps5[0] <= 1.10, (gaps5, gaps4))
+    check("under their heading, a little lower than five's first row, clear of the dots",
+          15 <= four[0] - five[0] <= 40 and four[-1] + gaps4[0] / 2 < 1080 - 7.4 * 19.2 - 1.3 * 19.2 - 8,
+          (four, five))
 
     # the rotation's dots: bottom right above the footer rule, one per board in its
     # line's colour, the current one larger and ringed in white

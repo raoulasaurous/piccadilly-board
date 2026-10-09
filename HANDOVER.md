@@ -242,9 +242,10 @@ its reason in the message.
 - **Column headings say the direction only.** "towards X" beside them showed
   only when every train went to X, which the rows already said, and vanished
   otherwise. Removed. `--explain` still prints it.
-- **Four trains a side**, not five, the text the same size and the rows at the
-  five-row spacing, in the places the first four had: under their heading, the
-  spare space at the bottom. Centred, they floated away from the headings.
+- **Four trains a side**, not five, the text the same size: under their heading,
+  a little lower than five's first row and 8% further apart (`ROW_DROP`,
+  `ROW_OPEN` in `board.py`), the spare space at the bottom. Centred, they floated
+  away from the headings; at five's spacing they sat too tight under them.
 - **A status too long for its line scrolls**: everything after "Status:", the
   mark and "Minor Delays" included. It rests 3 s when a board or a status first
   shows, then loops with no stop, a few words' gap between passes. A still frame
