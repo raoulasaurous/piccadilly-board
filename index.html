@@ -565,8 +565,10 @@ function fitStatus(restart) {
     void ticker.offsetWidth;
   }
   const wants = lineWants();
-  // half a pixel of slack, so a line that fits to the pixel is not flipped on and off by rounding
-  const run = !lessMotion.matches && wants > ticker.getBoundingClientRect().width + 0.5;
+  // a line that fits is exactly as wide as it wants, so the slack only has to cover
+  // noise in the sums: a hundredth of a pixel, under the layout's own step of 1/64.
+  // Any real overflow, even a hair, would show an ellipsis, so it must scroll.
+  const run = !lessMotion.matches && wants > ticker.getBoundingClientRect().width + 0.01;
   if (run) {
     const em = parseFloat(getComputedStyle($("line")).fontSize);
     // one pass is the line plus its 3em gap; the animation's delay is the rest

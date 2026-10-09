@@ -31,7 +31,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | The Pi itself | Plugged in at Raoul's on 9 Oct. It came up after the 6 Oct unplug with no card trouble. `throttled=0x0`, 47 C with the scroll running. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
-| Tested | 201 offline checks (`pi/test_rotation.py`), 38 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
+| Tested | 201 offline checks (`pi/test_rotation.py`), 44 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
@@ -46,7 +46,7 @@ cd ~/Downloads/piccadilly-board && git checkout main && git pull
 cd pi && python3 test_rotation.py            # 201 checks, no network needed
 python3 board.py --png /tmp/b.png            # live TfL: the Mac can reach it, this session could not
 python3 board.py --png /tmp/s.png --setup    # the WiFi setup screen
-cd .. && python3 test_index.py               # the web version, in headless Chrome (38 checks)
+cd .. && python3 test_index.py               # the web version, in headless Chrome (44 checks)
 ```
 
 Then, in this order:
@@ -368,9 +368,7 @@ In rough order:
    line is TfL's for Great Northern, which said Good Service on 7 Oct while the
    feed's own notice said trains were delayed up to 10 minutes: the feed's
    notices could be the reason after the status, and now they would scroll.
-5. **`index.html` has drifted** from the Pi board on 9 Oct: it still has
-   "towards", five rows and a cut status. Raoul's call whether it follows.
-6. The physical build (below). The frame order is parked by Raoul.
+5. The physical build (below). The frame order is parked by Raoul.
 
 ## Physical build
 

@@ -68,7 +68,7 @@ CASES = {
 # the status line's markup changed since the first half second (a refresh with the
 # same status must change none).
 PROBE = """
-let muts = null;
+let muts = null, first = null;
 setInterval(() => {
   const q = (s) => document.querySelector(s), box = (e) => e.getBoundingClientRect();
   if (muts === null) {
@@ -78,8 +78,20 @@ setInterval(() => {
   }
   const track = q('#track'), line = q('#line'), cs = getComputedStyle(track), val = q('#status');
   const rows = [...document.querySelectorAll('#colA .row')], copy = track.children[1];
+  // where the label, the mark and the text sit in the ticker's room, and how far
+  // each has moved since the first reading (the line rests for 3 s, then runs)
+  const lx = box(q('.status .lbl')).left, mx = box(q('#tick')).left - box(q('#ticker')).left, tx = box(val).left - box(q('#ticker')).left;
+  if (first === null) first = [lx, mx, tx];
+  const text = document.createRange(); text.selectNodeContents(val);
   document.title = JSON.stringify({
     stroke: getComputedStyle(q('#tick circle')).stroke,
+    moved: [first[0] - lx, first[1] - mx, first[2] - tx],
+    // how far the text is wider than its box: 0 when the whole text shows, over 0 when an ellipsis cuts it
+    squeeze: text.getBoundingClientRect().width - box(val).width,
+    // the status words a screen reader reaches: the copy is hidden from it
+    readable: [...q('.status').querySelectorAll('.val')].filter((v) => !v.closest('[aria-hidden="true"]')).length,
+    copyHidden: copy ? copy.getAttribute('aria-hidden') : null,
+    poke: window.pokeInfo || null,
     muts: muts,
     anim: [cs.animationName, cs.animationDelay, cs.animationIterationCount, cs.animationTimingFunction],
     cqw: box(q('.cols')).width / 100,
@@ -93,13 +105,14 @@ setInterval(() => {
   });
 }, 500);
 """
-def run(arrivals, status, stub=None, budget=4000, flags=()):
+def run(arrivals, status, stub=None, budget=4000, flags=(), poke=""):
     """Render the page with fetch stubbed. `stub` is JavaScript for a custom fetch;
-    the default answers the arrivals and the status given. `flags` go to Chrome."""
+    the default answers the arrivals and the status given. `flags` go to Chrome.
+    `poke` is JavaScript that runs in the page, after PROBE."""
     page = open(PAGE, encoding="utf-8").read()
     stub = stub or ("window.fetch = async (url) => ({ json: async () => url.includes('/Arrivals/') ? %s : %s });"
                     % (json.dumps(arrivals), json.dumps(status)))
-    page = page.replace("<script>", "<script>" + stub + PROBE + "</script>\n<script>", 1)
+    page = page.replace("<script>", "<script>" + stub + PROBE + poke + "</script>\n<script>", 1)
     d = tempfile.mkdtemp(); path = os.path.join(d, "t.html"); open(path, "w", encoding="utf-8").write(page)
     out = subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", f"--virtual-time-budget={budget}", *flags, "--dump-dom", "file://" + path],
                          capture_output=True, text=True, timeout=90).stdout
@@ -163,14 +176,31 @@ check("fewer trains than four draw only those", len(a[1]) == 1 and len(b[1]) == 
 # a status too long for its line scrolls; one that fits does not move
 a, b, st, mode = run(CASES["both ways"][0], GOOD)
 check("a short status stands still", not run.last["scrolling"] and run.last["anim"][0] == "none" and st == "Good Service", (run.last["scrolling"], run.last["anim"], st))
-a, b, st, mode = run(CASES["both ways"][0], LONG)
+a, b, st, mode = run(CASES["both ways"][0], LONG, budget=6000)
 check("a long status keeps its whole text and gets the scrolling treatment", run.last["scrolling"] and st.endswith("may be cancelled"), (run.last["scrolling"], st[-30:]))
 check("it rests 3 s once, runs at an even pace and never stops between passes", run.last["anim"] == ["ticker", "3s", "infinite", "linear"], run.last["anim"])
 check("the loop is the line and a copy of it, so each pass ends where the next starts", run.last["copyW"] and abs(run.last["copyW"] - run.last["line"]) < 1 and abs(run.last["track"] - 2 * (run.last["line"] + run.last["gap"])) < 2, run.last)
-check("the copy carries no ids and the page reads the status once", run.last["copyIds"] == 0 and st.count("Severe Delays") == 1, run.last["copyIds"])
+check("the copy carries no ids", run.last["copyIds"] == 0, run.last["copyIds"])
+check("and it is hidden from screen readers, so the page reads the status once", run.last["copyHidden"] == "true" and run.last["readable"] == 1, (run.last["copyHidden"], run.last["readable"]))
 check("the gap between passes is a few words wide (about 3 text heights)", 2 < run.last["gap"] / (run.last["cqw"] * 1.45) < 4, (run.last["gap"], run.last["cqw"]))
-check("the mark scrolls with the text, so the warning is not left standing", run.last["line"] > run.last["gap"], run.last)
+# the line rests 3 s and then runs, so by the end of a 6 s load it has moved left
+m = run.last["moved"]
+check("the mark moves left with the text, by the same distance", m[1] > 10 and abs(m[1] - m[2]) < 1, m)
+check("and the word Status: stays where it is, so the warning is not left standing", abs(m[0]) < 0.5, m)
 check("the tick is no longer green on the long one", run.last["stroke"] and run.last["stroke"] != good_stroke, (run.last["stroke"], good_stroke))
+# a line over its room by a hair must scroll, not be cut by an ellipsis: the room is set
+# from the line's own width, so the check holds in any font. The page calls fitStatus()
+# when the ticker's size changes; that call did not arrive in this headless run, so the
+# poke makes it.
+HAIR = ("setTimeout(() => { const tk = document.getElementById('ticker'), want = lineWants();"
+        " window.pokeInfo = { want: want, room: tk.getBoundingClientRect().width };"
+        " tk.style.flex = 'none'; tk.style.width = (want - %s) + 'px'; fitStatus(false); }, 1000);")
+SHORT = [{"lineStatuses": [{"statusSeverity": 6, "statusSeverityDescription": "Minor Delays", "reason": "a signal failure at Acton Town"}]}]
+for over in ("0.06", "0.02", "0.4"):
+    a, b, st, mode = run(CASES["both ways"][0], SHORT, flags=["--window-size=1280,800"], poke=HAIR % over)
+    check(f"a line {over} px over its room scrolls, so no ellipsis cuts it", run.last["scrolling"] and st.endswith("Acton Town"), (run.last["scrolling"], run.last["poke"]))
+a, b, st, mode = run(CASES["both ways"][0], SHORT, flags=["--window-size=1280,800"], poke=HAIR % "0")
+check("a line that fits its room exactly stands still, uncut", not run.last["scrolling"] and run.last["squeeze"] == 0 and run.last["poke"]["want"] < 1000, (run.last["scrolling"], run.last["squeeze"], run.last["poke"]))
 # the same status on every refresh must not restart the pass: 30 s refresh, 45 s of page time
 steady = ("window.fetch = async (url) => ({ json: async () => url.includes('/Arrivals/') ? %s : %s });"
           % (json.dumps(CASES["both ways"][0]), json.dumps(LONG)))
