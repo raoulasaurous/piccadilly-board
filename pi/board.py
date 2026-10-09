@@ -778,27 +778,32 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     clock = now.strftime("%H:%M")
     fc = font("light", 5.4 * u)
     d.text((W - pad, cy), clock, font=fc, fill=WHITE, anchor="rm")
-    # One dot per board on the rotation, the current one filled. Without them a
-    # station that changes on its own looks like the board losing its place, and
-    # someone waiting for their own station cannot tell whether it is still coming.
-    if rotation and rotation[1] > 1:
-        here, total = rotation
-        dr = 0.42 * u
-        step_d = 1.5 * u
-        dy = pad + 6.45 * u
-        last = W - pad - dr
-        for i in range(total):
-            dx = last - (total - 1 - i) * step_d
-            box = [dx - dr, dy - dr, dx + dr, dy + dr]
-            if i == here:
-                d.ellipse(box, fill=WHITE)
-            else:
-                d.ellipse(box, outline=DIM, width=max(1, round(0.13 * u)))
     rule_y = pad + 7.3 * u
     d.rectangle([pad, rule_y, W - pad, rule_y + 0.22 * u], fill=line_colour)
 
     # --- footer
     foot_rule = H - pad - 4.9 * u
+    # One dot per board on the rotation, filled in each board's line colour, the
+    # current one larger and ringed in white: hollow rings in the Piccadilly's dark
+    # blue or Great Northern purple all but vanished on black. Without them a station that changes on its own looks like the
+    # board losing its place, and someone waiting for their own station cannot tell
+    # whether it is still coming. Bottom right, just above the footer rule: under
+    # the clock they crowded the header (Raoul, 9 Oct 2026).
+    if rotation and rotation[1] > 1:
+        here, total = rotation[0], rotation[1]
+        colours = list(rotation[2]) if len(rotation) > 2 else [DIM] * total
+        dr = 0.42 * u
+        step_d = 1.5 * u
+        dy = foot_rule - 1.3 * u
+        last = W - pad - dr
+        for i in range(total):
+            dx = last - (total - 1 - i) * step_d
+            c = colours[i] if i < len(colours) else DIM
+            if i == here:
+                d.ellipse([dx - dr * 1.25, dy - dr * 1.25, dx + dr * 1.25, dy + dr * 1.25], fill=WHITE)
+                d.ellipse([dx - dr * 0.8, dy - dr * 0.8, dx + dr * 0.8, dy + dr * 0.8], fill=c)
+            else:
+                d.ellipse([dx - dr, dy - dr, dx + dr, dy + dr], fill=c)
     d.rectangle([pad, foot_rule, W - pad, foot_rule + 1], fill=RULE)
     # Centre the status in the strip between the rule and the bottom of the
     # screen rather than hanging it off the rule: on a wall this line is read
@@ -938,12 +943,10 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     rows_n = max(1, settings["rows"])
     rows_top = top + 3.2 * u
     # Spaced as five rows whatever the count, and the text the same size: fewer rows
-    # sit in the middle of the space between the headings and the footer rule rather
-    # than spreading out to fill it (Raoul, 9 Oct 2026: four trains, not five).
+    # keep the places the first ones had, under their heading, and the spare space
+    # falls at the bottom, where the rotation's dots sit (Raoul, 9 Oct 2026: four
+    # trains, not five). Centred, the four floated away from their headings.
     step = (foot_rule - 1.2 * u - rows_top) / max(5, rows_n)
-    if rows_n < 5:
-        head_base = d.textbbox((0, top), "NORTHBOUND", font=font("bold", 2.6 * u))[3]
-        rows_top = (head_base + foot_rule) / 2 - step * rows_n / 2
     for i, c in enumerate(cols):
         x0 = pad + i * (col_w + gap)
         if i:
@@ -1479,7 +1482,7 @@ def main():
             last_rotate = t
         v = views[idx]
         b = cached(v)
-        rotation = (idx, len(views))
+        rotation = (idx, len(views), tuple(LINE_COLOURS.get(x["line"], DIM) for x in views))
         # Draw first, fetch second. Switching boards then never waits on the network:
         # the station that comes up is the one already in hand, and its own refresh
         # lands straight after. Fetching first would let a ten-second TfL timeout

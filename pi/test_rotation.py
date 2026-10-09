@@ -1202,13 +1202,24 @@ def test_ticker():
     gaps4 = [b - a for a, b in zip(four, four[1:])]
     check("four rows: four trains, at the five-row spacing", len(four) == 4 and len(five) == 5
           and max(abs(g - gaps5[0]) for g in gaps4 + gaps5) <= 1, (gaps5, gaps4))
-    probe = board.ImageDraw.Draw(board.Image.new("RGB", (8, 8)))
-    u2 = 2 * 19.2
-    top2 = 2 * (2.5 * 19.2 + 7.3 * 19.2 + 1.8 * 19.2)
-    head = probe.textbbox((0, top2), "NORTHBOUND", font=board.font("bold", 2.6 * u2))[3] / 2
-    rule = 1080 - 2.5 * 19.2 - 4.9 * 19.2
-    check("centred between the column heading and the footer rule",
-          abs((four[0] + four[-1]) / 2 - (head + rule) / 2) <= 2, ((four[0] + four[-1]) / 2, (head + rule) / 2))
+    check("under their heading, where the first four were with five",
+          abs(four[0] - five[0]) <= 1 and abs(four[-1] - five[3]) <= 1, (four, five))
+
+    # the rotation's dots: bottom right above the footer rule, one per board in its
+    # line's colour, the current one larger and ringed in white
+    cs = (board.LINE_COLOURS["piccadilly"], board.LINE_COLOURS["victoria"], board.LINE_COLOURS["great-northern"])
+    dot = board.render(1920, 1080, v, cols, "Good Service", True, "", at, at, True, rotation=(1, 3, cs))
+    u1, dr = 19.2, 0.42 * 19.2
+    dy, last = 1080 - 2.5 * u1 - 4.9 * u1 - 1.3 * u1, 1920 - 2.5 * u1 - dr
+    xs = [last - (2 - i) * 1.5 * u1 for i in range(3)]
+    check("the dots sit above the footer rule, each in its board's line colour",
+          [dot.getpixel((round(x), round(dy))) for x in xs] == list(cs),
+          [dot.getpixel((round(x), round(dy))) for x in xs])
+    check("and the current board's is ringed in white",
+          dot.getpixel((round(xs[1] + dr), round(dy))) == board.WHITE
+          and dot.getpixel((round(xs[0] + dr), round(dy))) != board.WHITE)
+    check("nothing is left under the clock", dot.crop((1700, 150, 1900, 185)).getcolors(maxcolors=1 << 16)
+          == [(200 * 35, board.BG)])
 
     # the settings card: boxed, with its seconds counting down beside it
     card = {}
