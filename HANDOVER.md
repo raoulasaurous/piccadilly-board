@@ -214,9 +214,9 @@ to a port nobody could see, while the panel said "...". This screen can say it.
   line when the verdict changes, and one `fetch failed` line per distinct error,
   not one per pass.
 - For one minute (`ADDRESS_SECONDS`) from when the board first has an IP, not
-  from boot, the footer's right corner shows the board's own address in a slim
-  white box instead of the update age, with "Hides in 42s" counting down beside
-  it. A slow WiFi join, or the hand-over at the recipient's, still gets its minute.
+  from boot, the footer's right corner shows a QR code for the settings page on
+  that IP, with "Scan for settings" and "Hides in 42s" counting down beside it.
+  A slow WiFi join, or the hand-over at the recipient's, still gets its minute.
 - **Forget the WiFi**: on the page (type FORGET) or `sudo python3 portal.py
   --forget-wifi`. Deletes every saved network that is not an access point:
   comitup's own hotspot connection is named `<ap_name>-0000`, not the ssid, and
@@ -255,8 +255,13 @@ its reason in the message.
   status. The full frame keeps its 10 s redraw; the frame and the strip are
   packed before the shared lock, and only set, patch and write happen under it.
   Measured on the Pi: 8% of one core including the redraws, no stall at redraws.
-- **The settings card** is one minute, boxed, with a countdown the ticker draws
-  once a second (see "The WiFi screen").
+- **The settings card** is one minute: a QR code in the bottom right corner for
+  `http://<the board's IP>:8080`, "Scan for settings" and "Hides in 42s" beside it,
+  the countdown drawn by the ticker once a second. The IP is the one address that
+  always opens from a phone on the same WiFi, and the code is made fresh each
+  boot, so nobody types anything. Without `python3-qrcode` (the Mac) the
+  addresses show as text in a slim white box instead. The rotation's dots wait
+  while the code has the corner; with more rows it shrinks rather than cover a train.
 - **The dots** moved to the bottom right, coloured (see "The rotation").
 - A long "towards" ran off the screen before it was removed: the Pi draws in
   DejaVu, which is wider than the Helvetica Neue the Mac's `--png` uses. See

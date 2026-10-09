@@ -1252,6 +1252,72 @@ def test_ticker():
     check("drawn as one crisp pixel of white, not two greys",
           edge.count(board.WHITE) == 1 and all(p in (board.WHITE, board.BG) for p in edge), edge)
 
+    # with the QR library (the Pi has it; this test brings a stand-in): a QR code in
+    # the corner for the IP's settings page, crisp, clear of the trains, no dots under it
+    class FakeQR:
+        made = []
+
+        def __init__(self, border=4, box_size=10, error_correction=None):
+            self.border = border
+
+        def add_data(self, data):
+            FakeQR.made.append(data)
+
+        def make(self, fit=True):
+            pass
+
+        def make_image(self):
+            n = 25 + 2 * self.border
+            im = board.Image.new("1", (n, n), 1)
+            for yy in range(self.border, n - self.border):
+                for xx in range(self.border, n - self.border):
+                    if (xx * 7 + yy * 3) % 5 < 2:
+                        im.putpixel((xx, yy), 0)
+            return im
+    fake_qrcode = types.SimpleNamespace(QRCode=FakeQR, constants=types.SimpleNamespace(ERROR_CORRECT_M=0))
+    saved_qr = board.qrcode
+    board.qrcode = fake_qrcode
+    try:
+        qcard = {}
+        cs3 = (board.LINE_COLOURS["piccadilly"], board.LINE_COLOURS["victoria"], board.LINE_COLOURS["great-northern"])
+        qshot = board.render(1920, 1080, v, cols, "Good Service", True, "", at, at, True, rotation=(1, 3, cs3),
+                             address=("tubeboard", "192.168.1.23"), address_left=42.3, ticker=qcard)
+        check("the QR carries the settings page on the board's IP", FakeQR.made[-1:] == ["http://192.168.1.23:8080"],
+              FakeQR.made[-1:])
+        arr = np.asarray(qshot)
+        white = np.all(arr == 255, axis=2)
+        ys, xs = np.nonzero(white[700:, 1500:])
+        qx0, qy0, qx1, qy1 = 1500 + xs.min(), 700 + ys.min(), 1500 + xs.max() + 1, 700 + ys.max() + 1
+        qbox = qshot.crop((qx0, qy0, qx1, qy1))
+        check("in the bottom right corner, about a tenth of the width",
+              qx1 == round(1920 - 2.5 * 19.2) and abs(qy1 - (1080 - 0.6 * 19.2)) <= 1 and 150 <= qx1 - qx0 <= 192,
+              (qx0, qy0, qx1, qy1))
+        check("crisp: only black and white inside it",
+              {c for _, c in qbox.getcolors(maxcolors=1 << 16)} <= {(0, 0, 0), (255, 255, 255)},
+              {c for _, c in qbox.getcolors(maxcolors=1 << 16)})
+        bare = board.render(1920, 1080, v, cols, "Good Service", True, "", at, at, True)
+        check("clear of the trains: nothing was under it",
+              {c for _, c in bare.crop((qx0, qy0, qx1, min(qy1, 937))).getcolors(maxcolors=1 << 16)} <= {board.BG, board.RULE})
+        check("the dots wait while it has the corner",
+              all(qshot.getpixel((round(x), round(dy))) not in cs3 for x in xs_dots)
+              if (xs_dots := [1920 - 2.5 * 19.2 - 0.42 * 19.2 - (2 - i) * 1.5 * 19.2 for i in range(3)]) else False)
+        check("the countdown sits left of it, and the frame's seconds are the ticker's",
+              qcard["count"]["box"][2] <= qx0 and
+              qshot.crop(qcard["count"]["box"]).tobytes() ==
+              (lambda tt: (setattr(tt, "count", qcard["count"]), setattr(tt, "count_n", 43), tt.countdown())[2])(
+                  board.Ticker(None, 19.2)).tobytes())
+        eight = board.render(1920, 1080, dict(v, rows=8), [{"label": "NORTHBOUND", "towards": "",
+                             "rows": [("Uxbridge", 60 * k) for k in range(8)]}] * 2, "Good Service", True, "", at, at,
+                             True, address=("tubeboard", "192.168.1.23"), address_left=30)
+        bare8 = board.render(1920, 1080, dict(v, rows=8), [{"label": "NORTHBOUND", "towards": "",
+                             "rows": [("Uxbridge", 60 * k) for k in range(8)]}] * 2, "Good Service", True, "", at, at, True)
+        diff = np.nonzero(np.any(np.asarray(eight) != np.asarray(bare8), axis=2)[:930, 1500:])
+        hidden = {tuple(np.asarray(bare8)[y, 1500 + x]) for y, x in zip(*diff)}
+        check("with eight rows it shrinks rather than cover a train", hidden <= {board.BG, board.RULE},
+              list(hidden)[:4])
+    finally:
+        board.qrcode = saved_qr
+
     # the ticker against a screen made of a file, on a clock the test turns
     class FB:
         w, h, bpp = 1920, 1080, 16

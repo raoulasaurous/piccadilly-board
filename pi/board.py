@@ -728,7 +728,8 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           rotation=None, diag=None, address=None, ss=2, ticker=None, address_left=None, _align=1):
+           rotation=None, diag=None, address=None, ss=2, ticker=None, address_left=None, _align=1,
+           _out=None):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -743,9 +744,11 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     with an ellipsis, as a still image (--png) needs."""
     if ss > 1:
         inner = {"align": ss} if ticker is not None else None
+        out = {}
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
                      status_why, now, updated, live, rotation=rotation, diag=diag,
-                     address=address, ss=1, ticker=inner, address_left=address_left, _align=ss)
+                     address=address, ss=1, ticker=inner, address_left=address_left, _align=ss,
+                     _out=out)
         if inner and inner.get("strip") is not None:
             x0, y0, x1, y1 = inner["box"]
             ticker.update(box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss),
@@ -753,7 +756,13 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         if inner and inner.get("count"):
             x0, y0, x1, y1 = inner["count"]["box"]
             ticker["count"] = dict(inner["count"], box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss), ss=ss)
-        return big.reduce(ss)
+        small = big.reduce(ss)
+        if out.get("qr"):
+            # a QR code is drawn at the screen's own resolution: reduced, its module
+            # edges would blur, and a phone reads hard edges best
+            url, right, bottom, side = out["qr"]
+            paste_qr(small, url, right / ss, bottom / ss, side / ss)
+        return small
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -789,7 +798,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # board losing its place, and someone waiting for their own station cannot tell
     # whether it is still coming. Bottom right, just above the footer rule: under
     # the clock they crowded the header (Raoul, 9 Oct 2026).
-    if rotation and rotation[1] > 1:
+    # the settings QR takes the bottom right corner for its minute; the dots wait
+    qr_card = bool(address and (address[0] or address[1]) and qrcode is not None)
+    if rotation and rotation[1] > 1 and not qr_card:
         here, total = rotation[0], rotation[1]
         colours = list(rotation[2]) if len(rotation) > 2 else [DIM] * total
         dr = 0.42 * u
@@ -816,40 +827,51 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
     fupd = font("regular", 1.35 * u)
+    qr_req = None
     if address and (address[0] or address[1]):
-        # For the first minute after a boot this corner carries the board's own
-        # address instead of the update age. The settings page is findable only by
-        # someone who knows where to look, and this is the one moment they are looking.
-        # It sits in a slim white box, and beside it, in the update age's grey, how
-        # long it will stay (Raoul, 9 Oct 2026), so nobody copies half of it down.
+        # For the first minute after the board has an IP, this corner says where the
+        # settings page is. With the QR library (the Pi has it) that is a QR code in
+        # the corner, "Scan for settings" beside it and how long it will stay: the
+        # code carries the IP address, which is right on whatever network the board
+        # is on now, so nobody types anything (Raoul, 9 Oct 2026). Without the library,
+        # the addresses as text in a slim white box, as before.
         host, ip = address
-        card = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
-                                                      f"http://{ip}:8080" if ip else "") if x)
+        url = f"http://{ip}:8080" if ip else f"http://{host}.local:8080"
         card_right = W - pad
+        if qr_card:
+            side = QR_SIDE * u
+            card_right = W - pad - side - 1.4 * u
+            qr_req = (url, W - pad, H - 0.6 * u, side)
         if address_left is not None:
             n = max(1, math.ceil(address_left))
-            d.text((W - pad, uy), f"Hides in {n}s", font=fupd, fill=DIM, anchor="rm")
+            d.text((card_right, uy), f"Hides in {n}s", font=fupd, fill=DIM, anchor="rm")
             widest = text_w(d, f"Hides in {ADDRESS_SECONDS}s", fupd)
-            card_right = W - pad - widest - 1.4 * u
             if ticker is not None:
                 # The ticker redraws the seconds once a second; it gets the box they
                 # live in, on multiples of the supersampling factor like the strip's.
                 a = ticker.get("align", 1)
-                cx0 = int((W - pad - widest - 0.3 * u) // a * a)
-                cx1 = int(-(-min(W, W - pad + 0.3 * u) // a) * a)
+                cx0 = int((card_right - widest - 0.3 * u) // a * a)
+                cx1 = int(-(-min(W, card_right + 0.3 * u) // a) * a)
                 cy0, cy1 = int((uy - 1.1 * u) // a * a), int(-(-(uy + 1.1 * u) // a) * a)
-                ticker["count"] = {"box": (cx0, cy0, cx1, cy1), "right": W - pad - cx0,
+                ticker["count"] = {"box": (cx0, cy0, cx1, cy1), "right": card_right - cx0,
                                    "mid": uy - cy0, "size": 1.35 * u}
-        bp = 0.6 * u
-        bx0 = card_right - text_w(d, card, fupd) - 2 * bp
-        # One screen pixel of white: drawn _align pixels wide on _align boundaries,
-        # or the reduction smears a 2-px line across two pixels as two greys.
-        al = _align
-        d.rectangle([int(bx0 // al * al), int((uy - 1.25 * u) // al * al),
-                     int(-(-card_right // al) * al) - 1, int(-(-(uy + 1.25 * u) // al) * al) - 1],
-                    outline=WHITE, width=al)
-        d.text((card_right - bp, uy), card, font=fupd, fill=DIM, anchor="rm")
-        right_edge = bx0 - 2.0 * u
+            card_right -= widest + 1.4 * u
+        if qr_card:
+            d.text((card_right, uy), "Scan for settings", font=fupd, fill=DIM, anchor="rm")
+            right_edge = card_right - text_w(d, "Scan for settings", fupd) - 2.0 * u
+        else:
+            card = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
+                                                          f"http://{ip}:8080" if ip else "") if x)
+            bp = 0.6 * u
+            bx0 = card_right - text_w(d, card, fupd) - 2 * bp
+            # One screen pixel of white: drawn _align pixels wide on _align boundaries,
+            # or the reduction smears a 2-px line across two pixels as two greys.
+            al = _align
+            d.rectangle([int(bx0 // al * al), int((uy - 1.25 * u) // al * al),
+                         int(-(-card_right // al) * al) - 1, int(-(-(uy + 1.25 * u) // al) * al) - 1],
+                        outline=WHITE, width=al)
+            d.text((card_right - bp, uy), card, font=fupd, fill=DIM, anchor="rm")
+            right_edge = bx0 - 2.0 * u
     else:
         upd = "Updated " + ago(updated, now)
         d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
@@ -997,7 +1019,24 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
                 shown = clip(d, dest.split(" via ", 1)[0], fd, room)
             d.text((dot_x + 1.9 * u, yc), shown, font=fd, fill=WHITE, anchor="lm")
             d.text((x0 + col_w, yc), m, font=fm, fill=ORANGE, anchor="rm")
+    if qr_req:
+        url, right, bottom, side = qr_req
+        # never over a train: as tall as the space under the last row allows
+        last_row_bottom = rows_top + step * (rows_n - 0.5) + 1.5 * u
+        side = min(side, bottom - last_row_bottom)
+        if _out is not None and _align > 1:
+            _out["qr"] = (url, right, bottom, side)         # pasted after the reduction
+        else:
+            paste_qr(img, url, right, bottom, side)
     return img
+
+
+def paste_qr(img, url, right, bottom, side):
+    """A QR code for url, at most side pixels, its bottom right corner at (right,
+    bottom). The code brings its own light margin, the quiet zone a phone needs."""
+    qr = qr_image(url, side)
+    if qr is not None:
+        img.paste(qr, (int(right - qr.width), int(bottom - qr.height)))
 
 
 def qr_image(data, size):
@@ -1006,11 +1045,14 @@ def qr_image(data, size):
     if qrcode is None:
         return None
     try:
-        q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        q = qrcode.QRCode(border=2, box_size=1, error_correction=qrcode.constants.ERROR_CORRECT_M)
         q.add_data(data)
         q.make(fit=True)
         im = q.make_image().convert("RGB")
-        return im.resize((int(size), int(size)), Image.NEAREST)
+        # a whole number of pixels per module, so every module is the same size and
+        # the edges are hard; the code comes out at most `size`, never larger
+        k = max(1, int(size) // im.width)
+        return im.resize((im.width * k, im.height * k), Image.NEAREST)
     except Exception as e:                      # noqa: BLE001
         print("qr failed:", e, file=sys.stderr, flush=True)
         return None
@@ -1160,6 +1202,8 @@ def pack565(img):
 # How long the footer shows the settings address once the board has one (Raoul, 9 Oct
 # 2026: one minute; it was three, and squeezed the status line for all of them).
 ADDRESS_SECONDS = 60
+# The settings QR's side, in hundredths of the screen's width (about 190 px at 1080p).
+QR_SIDE = 10.0
 
 # Fewer than five rows: how much further apart than five's spacing, and how far
 # down from where five's first row sits, in hundredths of the screen's width.
