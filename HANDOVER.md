@@ -152,7 +152,12 @@ Board service through the Rail Data Marketplace:
   `x-apikey` header; `predictions()` turns the board into TfL-shaped arrivals.
   Inbound is a train to a London terminus (`LONDON_TERMINI`); the platform name
   carries the line's compass word (`LINES[...]["inbound"]`, Southbound for Great
-  Northern) so the two columns read as TfL's do. Cancelled trains are left out.
+  Northern) so the two columns read as TfL's do. A cancelled train stays in its
+  timetable place and its row says `Cancelled` instead of minutes, in the same
+  orange as `delayed` (`board.CANCELLED` is the marker in the row). It takes one
+  of the four rows, and goes two minutes after its timetable time. On the Pi
+  (DejaVu) `Cancelled` is wide enough that "Welwyn Garden City" beside it is cut
+  to "Welwyn Garden...".
   A train the feed calls "Delayed" with no estimate stays, and once its timetable
   time has gone its row says `delayed` instead of minutes. A train that left more
   than two minutes ago is dropped. Minutes are measured against the feed's own
@@ -164,8 +169,20 @@ Board service through the Rail Data Marketplace:
 - Thameslink is not in the operator table: it runs through London, so "a train
   to a London terminus is inbound" cannot name its directions.
 - A station entry is `{"source": "national-rail", "line": "great-northern",
-  "station_id": "DYP", "station_name": "Drayton Park"}`. The status line stays
-  TfL's: it publishes one for the operators under the same line ids.
+  "station_id": "DYP", "station_name": "Drayton Park"}`.
+- The status line is TfL's for the operator (TfL publishes one under the same
+  line ids) whenever TfL reports trouble. On 7 Oct TfL said Good Service while
+  the feed's own notice said trains were delayed by up to 10 minutes. So when TfL
+  says Good Service, or nothing, and the feed carries notices (`nrccMessages`),
+  the line says **Notice** under the orange bang, with the notices as its reason
+  (`rail.notice()`): what points elsewhere ("Latest information", "National
+  Rail website", "nationalrail.co.uk", "journey planner") dropped, a whole
+  sentence or the end of one from the clause that names it ("Buses replace
+  trains until 14:00, so please check the journey planner" keeps the buses;
+  `rail._news()`), several notices joined by a middle dot (`NOTICE_SEP`), whole sentences up to
+  about 300 characters (`NOTICE_CHARS`). A long one scrolls like any status. A notice with nothing left after the tidy
+  is no notice. The notices come from the same request as the trains.
+  `--explain` prints the status line the board would draw.
 - The key is `rail_api_key` in `settings.json`; `rail_api_url` overrides the
   base URL if the product path moves (it has moved once before). The default is
   `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120`,
@@ -364,12 +381,12 @@ In rough order:
    fixed to the Piccadilly in the markup. The direction bug it carried since
    19 Sept is fixed as of tonight. A one-destination board (the DLR shape) leaves
    its second column blank where the Pi goes full width.
-4. **The rail board's finer points** (the feed has now been seen live): a
-   cancelled train is dropped rather than shown struck through; the roundel says
-   NATIONAL RAIL; London termini are a hand-kept list in `rail.py`. Its status
-   line is TfL's for Great Northern, which said Good Service on 7 Oct while the
-   feed's own notice said trains were delayed up to 10 minutes: the feed's
-   notices could be the reason after the status, and now they would scroll.
+4. **The rail board's finer points** (the feed has now been seen live): the
+   roundel says NATIONAL RAIL; London termini are a hand-kept list in `rail.py`.
+   Done 9 Oct, not yet seen on the real screen: a cancelled train shows
+   `Cancelled` in its place instead of vanishing, and the feed's notices are the
+   status when TfL says Good Service (see "National Rail boards"). Raoul may want
+   the cancelled row struck through or dimmed as well.
 5. **`index.html` has drifted** from the Pi board on 9 Oct: it still has
    "towards", five rows and a cut status. Raoul's call whether it follows.
 6. The physical build (below). The frame order is parked by Raoul.

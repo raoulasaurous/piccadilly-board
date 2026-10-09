@@ -245,15 +245,38 @@ def test_rail_board():
           len(v) == 4 and v[3]["source"] == "national-rail" and v[3]["line"] == "great-northern")
     check("the cache tells it apart from a TfL board with the same ids",
           board.view_key(v[3]) != board.view_key(dict(v[3], source="tfl")))
-    saved = fake_clock[0]
-    try:
-        # the stub board is for 08:10; predictions are relative to now
-        board.dt = types.SimpleNamespace(datetime=FakeDT, timedelta=dt.timedelta)
-        fake_clock[0] = dt.datetime(2026, 10, 7, 8, 10).timestamp()
-        cols, status, ok, why = board.fetch(v[3])
-    finally:
-        board.dt = dt
-        fake_clock[0] = saved
+
+    def rail_fetch(view, feed=None, statuses=None):
+        """board.fetch for a rail board at 08:10, with this feed in place of
+        RAIL_BOARD and these line statuses in place of TfL's Good Service."""
+        saved = fake_clock[0], board.requests, rail.requests
+
+        def feed_get(url, params=None, headers=None, timeout=None):
+            r = Resp(dict(feed)); r.status_code = 200
+            return r
+
+        def status_get(url, params=None, timeout=None):
+            if url.endswith("/Status"):
+                board_calls.append(url)
+                return Resp([{"lineStatuses": statuses}])
+            return board_get(url, params, timeout)
+        try:
+            # the stub board is for 08:10; predictions are relative to now
+            board.dt = types.SimpleNamespace(datetime=FakeDT, timedelta=dt.timedelta)
+            fake_clock[0] = dt.datetime(2026, 10, 7, 8, 10).timestamp()
+            if feed is not None:
+                rail.requests = stub(feed_get)
+            if statuses is not None:
+                board.requests = stub(status_get)
+            return board.fetch(view)
+        finally:
+            board.dt = dt
+            fake_clock[0], board.requests, rail.requests = saved
+
+    asked = len(rail_calls)
+    cols, status, ok, why = rail_fetch(v[3])
+    check("one pass asks the feed once: the trains and the notices come in the same answer",
+          len(rail_calls) == asked + 1, rail_calls[asked:])
     check("the feed was asked with the key in the header",
           bool(rail_calls) and rail_calls[-1][1].get("x-apikey") == "k-test"
           and "/GetDepartureBoard/DYP" in rail_calls[-1][0], rail_calls[-1:])
@@ -284,16 +307,111 @@ def test_rail_board():
     check("the southbound column says where it goes",
           cols[0]["towards"] == "Moorgate" and cols[0]["rows"][0] == ("Moorgate", 120), cols[0])
     check("two services to Moorgate in the same minute are two rows", len(cols[0]["rows"]) == 2, cols[0]["rows"])
-    check("the cancelled train is not drawn; the overdue one says delayed; via is not doubled",
+    check("the cancelled train keeps its timetable place and says so; the overdue one says delayed; "
+          "via is not doubled",
           cols[1]["rows"] == [("Hertford North", None), ("Welwyn Garden City", 420),
+                              ("Hertford North", board.CANCELLED),
                               ("Stevenage via Hertford North", 720)], cols[1]["rows"])
     check("a row with no minutes is drawn as delayed", board.label_mins(None) == "delayed")
+    check("a cancelled row is drawn as Cancelled, and the marker is not a number",
+          board.label_mins(board.CANCELLED) == "Cancelled" and not isinstance(board.CANCELLED, (int, float)))
+    three = rail_fetch(views_for({"stations": [RAIL_STATION], "rail_api_key": "k-test", "rows": 3})[0])[0]
+    check("a cancelled train takes one of the rows: with three, the train after it is left off",
+          three[1]["rows"] == [("Hertford North", None), ("Welwyn Garden City", 420),
+                               ("Hertford North", board.CANCELLED)], three[1]["rows"])
+    gone = {"generatedAt": "2026-10-07T08:10:00.0000000+01:00", "trainServices": [
+        {"std": "08:07", "etd": "Cancelled", "isCancelled": True, "platform": "1", "serviceID": "x1",
+         "destination": [{"locationName": "Hertford North"}]},
+        {"std": "08:09", "etd": "Cancelled", "isCancelled": True, "platform": "1", "serviceID": "x2",
+         "destination": [{"locationName": "Hertford North"}]},
+        # isCancelled left false, the word in etd: still cancelled
+        {"std": "08:30", "etd": "Cancelled", "isCancelled": False, "platform": "1", "serviceID": "x3",
+         "destination": [{"locationName": "Stevenage"}]}]}
+    left = rail.predictions(gone, dt.datetime(2026, 10, 7, 8, 10), "great-northern")
+    check("a cancelled train three minutes past its time is dropped; one minute past, it stays",
+          [(a["id"], a["rail"]["cancelled"], a["timeToStation"]) for a in left]
+          == [("x2", True, 0), ("x3", True, 1200)], [(a["id"], a["timeToStation"]) for a in left])
+
+    # the feed's notices stand in for TfL's status when TfL says all is well
+    check("TfL says Good Service and the feed has a notice: the status is the notice, tidied",
+          status == "Notice" and ok and not board.good_status(status)
+          and why == "Lifts at Highbury are out of order.", (status, why))
+    quiet = dict(RAIL_BOARD, nrccMessages=None)
+    _, status2, ok2, why2 = rail_fetch(v[3], feed=quiet)
     check("the status line is TfL's for the operator",
-          status == "Good Service" and ok and any("/Line/great-northern/Status" in u for u in board_calls))
+          status2 == "Good Service" and ok2 and why2 == ""
+          and any("/Line/great-northern/Status" in u for u in board_calls), (status2, why2))
+    trouble = {"statusSeverity": 9, "statusSeverityDescription": "Minor Delays",
+               "reason": "Great Northern: Minor delays due to a signal failure at Finsbury Park."}
+    _, status3, ok3, why3 = rail_fetch(v[3], statuses=[trouble])
+    check("TfL reporting trouble keeps its own status and reason over the notice",
+          status3 == "Minor Delays" and ok3 and why3 == "due to a signal failure at Finsbury Park",
+          (status3, why3))
+    _, status4, ok4, why4 = rail_fetch(v[3], statuses=[])
+    check("TfL saying nothing, the notice still shows, not 'status unknown'",
+          status4 == "Notice" and ok4 and why4.startswith("Lifts"), (status4, why4))
+    pointers = dict(RAIL_BOARD, nrccMessages=[
+        {"Value": "<p>Plan ahead with the journey planner.</p>"},
+        {"Value": "<p>Check&nbsp;nationalrail.co.uk/service-disruptions before you travel.</p>"}])
+    _, status5, _, why5 = rail_fetch(v[3], feed=pointers)
+    check("a notice that only points elsewhere is no notice: TfL's Good Service stands",
+          status5 == "Good Service" and why5 == "", (status5, why5))
+    buses = dict(RAIL_BOARD, nrccMessages=[
+        {"Value": "<p>Buses replace trains between Hertford North and Stevenage until 14:00, "
+                  "so please check the journey planner before you travel.</p>"}])
+    _, status6, _, why6 = rail_fetch(v[3], feed=buses)
+    check("news and a pointer in one sentence: the news shows, the pointer goes",
+          status6 == "Notice"
+          and why6 == "Buses replace trains between Hertford North and Stevenage until 14:00.",
+          (status6, why6))
+
+    def say(*texts):
+        return rail.notice({"nrccMessages": [{"Value": t} for t in texts]})
+    oct7 = ("<p>Trains running between Welwyn Garden City and Potters Bar may be delayed by up to "
+            "10&nbsp;minutes. Latest information can be found in the Disruptions area of the "
+            "<a href=\"https://www.nationalrail.co.uk/service-disruptions/\">National Rail website</a>.</p>")
+    check("the 7 Oct notice loses its pointer to the website",
+          say(oct7) == "Trains running between Welwyn Garden City and Potters Bar may be delayed "
+                       "by up to 10 minutes.", say(oct7))
+    dash = say("<p>Trains are delayed by up to 10 minutes - see the National Rail website for details.</p>")
+    lead = say("<p>If you are travelling today, please check the journey planner.</p>")
+    check("a sentence is cut at the clause that points elsewhere; a clause that only leads in to it goes too",
+          dash == "Trains are delayed by up to 10 minutes." and lead == "", (dash, lead))
+    check("two notices are joined with a dot between, and the same one twice is said once",
+          say("<p>Lifts out of order.</p>", "<p>Ticket office closed.</p>", "<p>Lifts out of order.</p>")
+          == "Lifts out of order.  ·  Ticket office closed.",
+          say("<p>Lifts out of order.</p>", "<p>Ticket office closed.</p>", "<p>Lifts out of order.</p>"))
+    long = say(" ".join(f"Sentence number {n} of a long notice about the line today." for n in range(12)))
+    endless = say("word " * 400)
+    check("a long notice is cut at about 300 characters, at a sentence; one with no full stop, at a word",
+          250 < len(long) <= 300 and long.endswith("today.") and long.startswith("Sentence number 0 ")
+          and len(endless) <= 303 and endless.endswith("word..."), (len(long), long[-20:], endless[-12:]))
+
     at = dt.datetime(2026, 10, 7, 8, 10)
     img = board.render(1920, 1080, v[3], cols, status, ok, why, at, at, True, rotation=(3, 4))
     img.save(os.path.join(TMP, "rail.png"))
     check("it draws", img.size == (1920, 1080))
+    # "Cancelled" is the widest thing the minutes slot holds, and DejaVu on the Pi is
+    # wider than the Mac's font: the longest destination on the line beside it must
+    # still say where the train was going
+    shown, real_clip = [], board.clip
+
+    def clip(d, text, fnt, room):
+        out = real_clip(d, text, fnt, room)
+        shown.append((text, out))
+        return out
+    board.clip = clip
+    try:
+        board.render(1920, 1080, v[3], [cols[0], dict(cols[1], rows=[("Welwyn Garden City", board.CANCELLED)])],
+                     status, ok, why, at, at, True)
+    finally:
+        board.clip = real_clip
+    wgc = [out for text, out in shown if text == "Welwyn Garden City"]
+    check("beside Cancelled, Welwyn Garden City still reads as Welwyn Garden",
+          len(wgc) == 1 and wgc[0].startswith("Welwyn Garden"), wgc)
+    spec = {}
+    board.render(1920, 1080, v[3], cols, "Notice", True, say(oct7), at, at, True, ticker=spec)
+    check("the 7 Oct notice is longer than the line, so it scrolls", spec.get("strip") is not None)
     check("the header knows the operator",
           board.LINE_NAMES["great-northern"] == "Great Northern"
           and board.NETWORK["great-northern"] == "NATIONAL RAIL")
@@ -353,6 +471,9 @@ def test_rail_board():
     check("--explain shows the feed's own account and the columns",
           "Drayton Park [DYP]" in text and "Cancelled" in text and "The board draws 2 column(s)" in text,
           text[:400])
+    check("--explain shows the cancelled row, and the notice as the status",
+          "Cancelled  Hertford North" in text
+          and "Status: Notice - Lifts at Highbury are out of order." in text, text)
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
         run_loop({"stations": [RAIL_STATION]}, argv=["board.py", "--explain"])
