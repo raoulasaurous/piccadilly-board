@@ -356,6 +356,14 @@ def test_rail_board():
     _, status5, _, why5 = rail_fetch(v[3], feed=pointers)
     check("a notice that only points elsewhere is no notice: TfL's Good Service stands",
           status5 == "Good Service" and why5 == "", (status5, why5))
+    buses = dict(RAIL_BOARD, nrccMessages=[
+        {"Value": "<p>Buses replace trains between Hertford North and Stevenage until 14:00, "
+                  "so please check the journey planner before you travel.</p>"}])
+    _, status6, _, why6 = rail_fetch(v[3], feed=buses)
+    check("news and a pointer in one sentence: the news shows, the pointer goes",
+          status6 == "Notice"
+          and why6 == "Buses replace trains between Hertford North and Stevenage until 14:00.",
+          (status6, why6))
 
     def say(*texts):
         return rail.notice({"nrccMessages": [{"Value": t} for t in texts]})
@@ -365,6 +373,10 @@ def test_rail_board():
     check("the 7 Oct notice loses its pointer to the website",
           say(oct7) == "Trains running between Welwyn Garden City and Potters Bar may be delayed "
                        "by up to 10 minutes.", say(oct7))
+    dash = say("<p>Trains are delayed by up to 10 minutes - see the National Rail website for details.</p>")
+    lead = say("<p>If you are travelling today, please check the journey planner.</p>")
+    check("a sentence is cut at the clause that points elsewhere; a clause that only leads in to it goes too",
+          dash == "Trains are delayed by up to 10 minutes." and lead == "", (dash, lead))
     check("two notices are joined with a dot between, and the same one twice is said once",
           say("<p>Lifts out of order.</p>", "<p>Ticket office closed.</p>", "<p>Lifts out of order.</p>")
           == "Lifts out of order.  ·  Ticket office closed.",

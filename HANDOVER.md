@@ -175,9 +175,11 @@ Board service through the Rail Data Marketplace:
   the feed's own notice said trains were delayed by up to 10 minutes. So when TfL
   says Good Service, or nothing, and the feed carries notices (`nrccMessages`),
   the line says **Notice** under the orange bang, with the notices as its reason
-  (`rail.notice()`): sentences that only point elsewhere ("Latest information",
-  "National Rail website", "nationalrail.co.uk", "journey planner") dropped,
-  several notices joined by a middle dot (`NOTICE_SEP`), whole sentences up to
+  (`rail.notice()`): what points elsewhere ("Latest information", "National
+  Rail website", "nationalrail.co.uk", "journey planner") dropped, a whole
+  sentence or the end of one from the clause that names it ("Buses replace
+  trains until 14:00, so please check the journey planner" keeps the buses;
+  `rail._news()`), several notices joined by a middle dot (`NOTICE_SEP`), whole sentences up to
   about 300 characters (`NOTICE_CHARS`). A long one scrolls like any status. A notice with nothing left after the tidy
   is no notice. The notices come from the same request as the trains.
   `--explain` prints the status line the board would draw.

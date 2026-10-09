@@ -235,11 +235,43 @@ def messages(board):
     return out
 
 
-# Sentences in a notice that only send the reader somewhere else. A wall has
-# nowhere to click, and on 7 Oct 2026 one was half of Drayton Park's notice.
+# Words in a notice that send the reader somewhere else. A wall has nowhere to
+# click, and on 7 Oct 2026 one such sentence was half of Drayton Park's notice.
 ELSEWHERE = ("latest information", "national rail website", "nationalrail.co.uk", "journey planner")
+# Where one clause of a sentence ends and the next begins. "14:00" and
+# "step-free" have no space after the mark, so they are not split.
+CLAUSE = re.compile(r"[,;:]\s+|\s+[-–—]\s+|\s+(?:and|so|but)\s+", re.I)
+# A clause that starts like this, just before the pointer, only leads in to it:
+# "If you are travelling today, please check the journey planner."
+LEAD_IN = ("if", "when", "before", "for", "to", "please", "check", "plan")
 NOTICE_SEP = "  ·  "
 NOTICE_CHARS = 300
+
+
+def _news(sentence):
+    """The part of one sentence that is news, without its pointer elsewhere.
+    The news comes first and the pointer last, so the sentence is cut at the
+    clause that names the pointer: "Buses replace trains until 14:00, so please
+    check the journey planner." keeps "Buses replace trains until 14:00." A
+    sentence that is all pointer gives ""."""
+    if not any(w in sentence.lower() for w in ELSEWHERE):
+        return sentence
+    marks = [(0, 0)] + [m.span() for m in CLAUSE.finditer(sentence)] + [(len(sentence), None)]
+    kept = []
+    for (_, start), (end, _) in zip(marks, marks[1:]):
+        clause = sentence[start:end]
+        if any(w in clause.lower() for w in ELSEWHERE):
+            break
+        kept.append((clause, end))
+    def lead_in(clause):
+        words = clause.lower().split()
+        while words and words[0] in ("and", "so", "but", "then"):
+            words.pop(0)
+        return bool(words) and words[0] in LEAD_IN
+    while kept and lead_in(kept[-1][0]):
+        kept.pop()
+    news = sentence[:kept[-1][1]].rstrip(" ,;:-–—") if kept else ""
+    return news + "." if news else ""
 
 
 def notice(board, limit=NOTICE_CHARS):
@@ -247,16 +279,15 @@ def notice(board, limit=NOTICE_CHARS):
     in them is left to say. On 7 Oct 2026 TfL's status for Great Northern said Good
     Service while this feed's notice said trains were delayed by up to ten minutes.
 
-    Sentences that only point elsewhere are dropped, and several notices are
-    joined with a dot between. Whole sentences are kept up to about `limit`
+    What points elsewhere is dropped (a whole sentence, or the end of one that
+    has news first), and several notices are joined with a dot between. Whole sentences are kept up to about `limit`
     characters: the footer scrolls a long line, but it draws the whole line as one
     strip first, and a notice with no full stop in it could run to thousands."""
     notices = []
     for m in messages(board):
         # a link's closing tag leaves a space before the full stop: "website ."
         m = re.sub(r"\s+([.,;:!?])", r"\1", m)
-        keep = [s for s in re.split(r"(?<=[.!?])\s+", m)
-                if s and not any(w in s.lower() for w in ELSEWHERE)]
+        keep = [s for s in map(_news, re.split(r"(?<=[.!?])\s+", m)) if s]
         if keep and keep not in notices:
             notices.append(keep)
     text, last = "", None
