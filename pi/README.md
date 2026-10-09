@@ -95,10 +95,13 @@ Then under **National Rail** on the settings page: the station's three-letter
 code (DYP for Drayton Park; every National Rail timetable shows them), the
 operator, and the key. The key is saved once and kept (typing it later, for a
 station already on the list, saves it too). Trains to a London terminus are the
-southbound (or inbound) column; the rest are the other. Cancelled trains are
-left out; a delayed one with no estimate stays and its row says "delayed" once
-its time has gone. If the key is missing or wrong the screen says so in those
-words; if the feed does not know the station code, likewise.
+southbound (or inbound) column; the rest are the other. A cancelled train stays
+in its place and its row says "Cancelled" until two minutes after its time; a
+delayed one with no estimate stays and its row says "delayed" once its time has
+gone. When TfL says Good Service but National Rail has a notice for the station
+(trains delayed, say), the status line says "Notice" and gives it. If the key is
+missing or wrong the screen says so in those words; if the feed does not know
+the station code, likewise.
 
 ## From a shell, when the page is out of reach
 

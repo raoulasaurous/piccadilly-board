@@ -288,6 +288,22 @@ def row_text(a):
     return dest
 
 
+# What a row carries in place of its seconds for a train that will not run. A
+# word, not a number: nothing can sort it or count it down by mistake.
+CANCELLED = "cancelled"
+
+
+def row_secs(a):
+    """The minutes slot of a row: seconds to go, None for a rail train past its
+    timetable time with no estimate (drawn "delayed"), or CANCELLED."""
+    r = a.get("rail") or {}
+    if r.get("cancelled"):
+        return CANCELLED
+    if r.get("overdue"):
+        return None
+    return int(a.get("timeToStation", 0))
+
+
 def dedupe(arrivals):
     """The DLR files one prediction per platform for the same train, and vehicleId is
     empty, so the same train would be drawn twice. Match on destination plus time.
@@ -467,13 +483,14 @@ def tidy_reason(reason, line):
 
 def arrivals_for(settings):
     """The raw predictions for one board, in TfL's shape, from whichever feed
-    carries the station."""
+    carries the station, and that feed's own notices as one line ("" from TfL).
+    Both come from the one request: the rail board is asked for once a pass."""
     if settings.get("source") == "national-rail":
         if rail is None:
             raise RuntimeError("rail.py is missing: the installer copies it next to board.py")
         board = rail.fetch(settings["station_id"], settings.get("rail_api_key") or "",
                            settings.get("rail_api_url") or None)
-        return rail.predictions(board, dt.datetime.now(), settings["line"])
+        return rail.predictions(board, dt.datetime.now(), settings["line"]), rail.notice(board)
     q = {"app_key": settings["app_key"]} if settings["app_key"] else {}
     # quote both: the settings file can hold anything, and a stray / or ? would
     # rewrite the path or the query instead of failing
@@ -484,12 +501,17 @@ def arrivals_for(settings):
     arrivals = r.json()
     if not isinstance(arrivals, list):
         raise ValueError("arrivals: unexpected response")
-    return arrivals
+    return arrivals, ""
+
+
+def good_status(text):
+    """A status that earns the green tick."""
+    return (text or "").lower() in ("good service", "no issues")
 
 
 def fetch(settings):
     """Returns (columns, status_text, status_ok). Each column: label, towards, rows[(dest, secs)]."""
-    arrivals = arrivals_for(settings)
+    arrivals, notice = arrivals_for(settings)
     arrivals.sort(key=lambda a: a.get("timeToStation", 1e9))
     arrivals = dedupe(arrivals)
 
@@ -512,6 +534,13 @@ def fetch(settings):
             status_why = tidy_reason(worst.get("reason") or "", line)
     except Exception as e:
         print("status fetch failed:", e, file=sys.stderr, flush=True)
+    # A rail board has a second account of the line: the feed's own notices. On
+    # 7 Oct 2026 TfL said Good Service for Great Northern while the notice said
+    # trains were delayed by up to ten minutes. TfL's word stands when it reports
+    # trouble; when it says all is well, or nothing, the notice is the reason, under
+    # the orange bang rather than a green tick.
+    if notice and (status_text is None or good_status(status_text)):
+        status_text, status_ok, status_why = "Notice", True, notice
 
     groups = group(arrivals, settings["columns"])
     chains = [column_label(c, mine) for c, mine in groups]
@@ -534,9 +563,7 @@ def fetch(settings):
         towards = (c or {}).get("towards") or (next(iter(tows)) if len(tows) == 1 else "")
         if "TOWARDS" in label:
             towards = ""  # already in the heading
-        # a rail train past its timetable time with no estimate has no minutes to show
-        rows = [(row_text(a), None if (a.get("rail") or {}).get("overdue") else int(a.get("timeToStation", 0)))
-                for a in mine]
+        rows = [(row_text(a), row_secs(a)) for a in mine]
         cols.append({"label": label, "towards": towards, "rows": rows[: settings["rows"]]})
 
     # One direction running, and we can name the other one: keep the second column and
@@ -594,12 +621,14 @@ def explain(settings):
     if lost:
         print(f"\n  {lost} of those are duplicate predictions for the same train")
 
-    cols, _, _, _ = fetch(settings)
+    cols, status, ok, why = fetch(settings)
+    # what the footer says, so a rail board's notice standing in for TfL's word shows here
+    print("\nStatus: " + ((status + (f" - {why}" if why else "")) if ok else "unknown"))
     print(f"\nThe board draws {len(cols)} column(s):")
     for c in cols:
         print("  " + c["label"] + (f'  towards {c["towards"]}' if c["towards"] else ""))
         for dest, secs in c["rows"]:
-            print(f'      {label_mins(secs):>6}  {dest}')
+            print(f'      {label_mins(secs):>9}  {dest}')
 
     empty = [c["label"] for c in cols if not c["rows"]]
     if empty and len(cols) > 1:
@@ -659,6 +688,8 @@ def text_w(d, s, f):
 def label_mins(secs):
     if secs is None:
         return "delayed"
+    if secs == CANCELLED:
+        return "Cancelled"
     m = round(secs / 60)
     return "due" if m <= 0 else f"{m} min"
 
@@ -885,7 +916,7 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         # a green tick we never checked is worse than saying we do not know
         d.text((x, fy), clip(d, "Service status unknown", font("bold", 1.9 * u), right_edge - x), font=font("bold", 1.9 * u), fill=ORANGE, anchor="lm")
     else:
-        good = status_text.lower() in ("good service", "no issues")
+        good = good_status(status_text)
         col = GREEN if good else ORANGE
         # The tick and the bang are drawn, not typed: a font without the glyph
         # would put an empty box on the wall and nobody would know why.

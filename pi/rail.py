@@ -172,23 +172,26 @@ def predictions(board, now, line):
 
     inbound/outbound is decided by the destination: a train to a London terminus is
     inbound. The platform name carries the line's compass word for that direction,
-    which is what the two column headings are made from. Cancelled trains are left
-    out: a cancelled train is not one anyone can catch, and the status line is where
-    disruption belongs. A delayed train with no estimate keeps its timetable time."""
+    which is what the two column headings are made from. A cancelled train stays,
+    in its timetable place, marked cancelled: dropped, the 08:20 someone is waiting
+    for just vanished from the board, and they kept waiting for it. A delayed train
+    with no estimate keeps its timetable time."""
     tab = LINES.get(line, {})
     now = feed_time(board) or now
     out = []
     for s in _get(board, "trainServices", default=[]) or []:
-        if _get(s, "isCancelled", default=False) or (_get(s, "etd") or "").strip().lower() == "cancelled":
-            continue
         std, etd = _get(s, "std") or "", _get(s, "etd") or ""
-        delayed = etd.strip().lower() == "delayed"
-        when = _hhmm(etd) or _hhmm(std)
+        cancelled = bool(_get(s, "isCancelled", default=False)) or etd.strip().lower() == "cancelled"
+        delayed = not cancelled and etd.strip().lower() == "delayed"
+        # a cancelled train has no estimate; its place is its timetable time
+        when = _hhmm(std) if cancelled else (_hhmm(etd) or _hhmm(std))
         secs = secs_until(when, now)
         # A train that left more than two minutes ago is still on the feed for a
         # moment; drawn, it would sit at "due" under a train that has gone. A train
         # the feed calls "Delayed" with no estimate has not left: its timetable time
         # passing is the delay, so it stays, and the row says "delayed", not "due".
+        # A cancelled one goes on the same two minutes past its timetable time: by
+        # then nobody on the platform is still waiting for it.
         if secs is None or (secs < -120 and not delayed):
             continue
         dests = _destinations(s)
@@ -210,7 +213,7 @@ def predictions(board, now, line):
             "destinationName": dest,
             "towards": dest + (f" via {via}" if via else ""),
             "timeToStation": max(0, secs),
-            "rail": {"std": std, "etd": etd, "delayed": delayed,
+            "rail": {"std": std, "etd": etd, "delayed": delayed, "cancelled": cancelled,
                      # past its timetable time with no estimate: there are no minutes to show
                      "overdue": delayed and secs < 0,
                      "operator": _get(s, "operator") or ""},
@@ -232,6 +235,42 @@ def messages(board):
     return out
 
 
+# Sentences in a notice that only send the reader somewhere else. A wall has
+# nowhere to click, and on 7 Oct 2026 one was half of Drayton Park's notice.
+ELSEWHERE = ("latest information", "national rail website", "nationalrail.co.uk", "journey planner")
+NOTICE_SEP = "  ·  "
+NOTICE_CHARS = 300
+
+
+def notice(board, limit=NOTICE_CHARS):
+    """The station's notices as one reason for the status line, or "" when nothing
+    in them is left to say. On 7 Oct 2026 TfL's status for Great Northern said Good
+    Service while this feed's notice said trains were delayed by up to ten minutes.
+
+    Sentences that only point elsewhere are dropped, and several notices are
+    joined with a dot between. Whole sentences are kept up to about `limit`
+    characters: the footer scrolls a long line, but it draws the whole line as one
+    strip first, and a notice with no full stop in it could run to thousands."""
+    notices = []
+    for m in messages(board):
+        # a link's closing tag leaves a space before the full stop: "website ."
+        m = re.sub(r"\s+([.,;:!?])", r"\1", m)
+        keep = [s for s in re.split(r"(?<=[.!?])\s+", m)
+                if s and not any(w in s.lower() for w in ELSEWHERE)]
+        if keep and keep not in notices:
+            notices.append(keep)
+    text, last = "", None
+    for i, s in ((i, s) for i, keep in enumerate(notices) for s in keep):
+        joined = s if last is None else text + (" " if i == last else NOTICE_SEP) + s
+        if last is not None and len(joined) > limit:
+            break
+        text, last = joined, i
+    if len(text) > limit:
+        # one sentence longer than the whole allowance: cut it at a word
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(" .,;:") + "..."
+    return text
+
+
 def explain(board, now, line, out=print):
     """What the feed said and what the board makes of it, for --explain."""
     name = _get(board, "locationName") or "?"
@@ -245,10 +284,15 @@ def explain(board, now, line, out=print):
     preds = predictions(board, now, line)
     out(f"{len(preds)} of those become predictions:")
     for a in preds:
-        mins = "delayed" if a["rail"]["overdue"] else f"{a['timeToStation'] // 60:3d} min"
-        out(f"  {mins:>7}  {a['platformName']:<24}  {a['towards']}")
+        r = a["rail"]
+        mins = ("Cancelled" if r["cancelled"] else "delayed" if r["overdue"]
+                else f"{a['timeToStation'] // 60:3d} min")
+        out(f"  {mins:>9}  {a['platformName']:<24}  {a['towards']}")
     for m in messages(board):
         out("  notice: " + m[:160])
+    reason = notice(board)
+    if reason:
+        out("the status reason, unless TfL reports trouble: " + reason)
 
 
 if __name__ == "__main__":
