@@ -1025,10 +1025,11 @@ def check_hotspot(conf):
 
 def _clamped(value, lo, hi, default):
     """The number board.py would use for a setting: its own default when the file holds
-    something that is not a number, and its limits otherwise."""
+    something that is not a number, and its limits otherwise. json reads Infinity and 1e400
+    as inf, and int(inf) is an OverflowError, not a ValueError: board.py catches both."""
     try:
         return max(lo, min(hi, int(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

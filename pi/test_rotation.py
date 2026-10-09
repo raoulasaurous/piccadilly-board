@@ -20,6 +20,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1346,6 +1347,24 @@ def test_handover_check():
         check("rows are shown as the board clamps them, and the one board has no rotation",
               "8 trains" in hc_find(lines, "Boards:") and "no rotation" in hc_find(lines, "Boards:")
               and "30 s" in hc_find(lines, "Boards:"), hc_find(lines, "Boards:"))
+        # json reads Infinity and 1e400 as inf, and int(inf) is an OverflowError. The board
+        # survives that, so the check must too, and must still print every line.
+        for field, text in (("rows", "Infinity"), ("rows", "1e400"), ("rows", "NaN"),
+                            ("rotate_seconds", "Infinity"), ("rotate_seconds", "-1e400")):
+            body = json.dumps({"stations": [tfl, RAIL_STATION], "rows": 4, "rotate_seconds": 20})
+            with open(portal.SETTINGS_PATH, "w") as f:
+                f.write(body.replace(f'"{field}": {4 if field == "rows" else 20}', f'"{field}": {text}'))
+            try:
+                lines = run()[1]
+                bd = hc_find(lines, "Boards:")
+                crashed = ""
+            except Exception as e:                                  # noqa: BLE001
+                bd, lines, crashed = "", [], f"{type(e).__name__}: {e}"
+            want = "4 trains each way" if field == "rows" else "30 s each"
+            check(f"{field} {text} in settings.json gives the board's default, not a crash",
+                  not crashed and want in bd and lines[-1].startswith("Next"), crashed or bd)
+        write_portal({"stations": [tfl], "rows": 12, "rotate_seconds": "soon"})
+        lines = run()[1]
         check("no rail key and no rail board is OK", hc_find(lines, "Rail key:").startswith("OK"))
         check("the right hotspot name is OK", hc_find(lines, "Hotspot:").startswith("OK"))
         lines = quiet(lambda: portal.cli_handover_check(user=user, conf=conf, live_dir="/opt/elsewhere",
@@ -1445,6 +1464,16 @@ def test_handover_flag():
         out = quiet(portal.main)
         check("the flag prints the check and exits without starting the page",
               "WiFi:" in out and out.splitlines()[-1].startswith("Next"), out)
+        with open(portal.SETTINGS_PATH, "w") as f:
+            f.write('{"line": "piccadilly", "station_id": "940GZZLUASL", "station_name": "Arsenal", '
+                    '"rows": Infinity, "rotate_seconds": 1e400}')
+        try:
+            out = quiet(portal.main)
+        except Exception as e:                                      # noqa: BLE001
+            out = f"{type(e).__name__}: {e}"
+        check("the flag still prints every line when the file holds Infinity",
+              "WiFi:" in out and "Boards:" in out and out.splitlines()[-1].startswith("Next"), out)
+        write_portal(dict(BASE))
         del calls[:]
         msg = main_with("--handover-check", "--forget-wifi")
         check("mixed with a flag that changes things, it refuses and changes nothing",
@@ -1455,6 +1484,24 @@ def test_handover_flag():
         sys.argv = argv
         (portal.run_command, portal.find_board_user, portal.COMITUP_CONF, portal.LIVE_DIR,
          portal.hotspot_name) = saved
+
+
+def test_handover_doc():
+    print("\nHANDOVER.md lists the hand-over steps in the order the check gives")
+    path = os.path.join(HERE, "..", "HANDOVER.md")
+    if not os.path.exists(path):
+        print("  skipped: HANDOVER.md is not next to this folder")
+        return
+    text = open(path, encoding="utf-8").read()
+    part = text.split("## Before it goes to the recipient", 1)[1].split("\n## ", 1)[0]
+    steps = [x.lower() for x in re.findall(r"^\d+\. (.*(?:\n   .*)*)", part, re.M)]
+    at = {k: next((n for n, x in enumerate(steps) if k in x), None)
+          for k in ("phone", "password", "remotely", "forget the wifi", "first power-on")}
+    check("every step is in the list", None not in at.values(), at)
+    check("the phone, then the password, then the rest, then the WiFi, then the first power-on",
+          at["phone"] < at["password"] < at["remotely"] < at["forget the wifi"] < at["first power-on"], at)
+    check("the WiFi is the last step before the first power-on",
+          at["forget the wifi"] + 1 == at["first power-on"], at)
 
 
 def test_both_ends():
@@ -1701,6 +1748,7 @@ if __name__ == "__main__":
     test_board_user()
     test_handover_check()
     test_handover_flag()
+    test_handover_doc()
     test_both_ends()
     print()
     if FAILS:
