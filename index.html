@@ -92,13 +92,18 @@
   .cols{display:grid;grid-template-columns:1fr 1px 1fr;gap:3cqw;flex:1;min-height:0}
   .divider{background:var(--hair)}
   .col{min-width:0;display:flex;flex-direction:column}
-  .colhead{display:flex;align-items:baseline;gap:.9cqw;margin-bottom:1.2cqw}
+  /* The heading is the direction and nothing else: the rows already say where
+     each train goes (the Pi board dropped its "towards" on 9 Oct for the same reason). */
+  .colhead{margin-bottom:1.2cqw}
   .colhead .dir{font-size:1.95cqw;font-weight:600;letter-spacing:.01em;white-space:nowrap}
-  .colhead .towards{font-size:1.3cqw;font-weight:300;color:var(--dim);white-space:nowrap}
-  .rows{position:relative;display:flex;flex-direction:column;justify-content:flex-start;flex:1}
-  /* A fixed row height, so five trains sit at a readable rhythm AND the two
+  /* Four trains, the same size as five were. --row is five's row height, 6.4cqw,
+     opened by 8%; --drop sets the block a little below where five's first row sat.
+     The spare space falls at the bottom, as on the Pi board. */
+  :root{--row:6.912cqw;--drop:1cqw}
+  .rows{position:relative;display:flex;flex-direction:column;justify-content:flex-start;flex:1;padding-top:var(--drop)}
+  /* A fixed row height, so four trains sit at a readable rhythm AND the two
      columns line up with each other even when one has fewer trains. */
-  .row{position:relative;display:flex;align-items:center;gap:1.4cqw;min-width:0;flex:0 0 6.4cqw}
+  .row{position:relative;display:flex;align-items:center;gap:1.4cqw;min-width:0;flex:0 0 var(--row)}
   /* The joining line is drawn per row, from this dot down to the next one, so
      it always stops at the last train instead of running into empty space. */
   .row:not(:last-child)::before{
@@ -106,7 +111,7 @@
     position:absolute;
     left:.475cqw;
     top:50%;
-    height:6.4cqw;
+    height:var(--row);
     width:1px;
     margin-left:-.5px;
     background:var(--dot);
@@ -146,11 +151,27 @@
     padding-top:1.5cqw;
     font-size:1.45cqw;
   }
-  .status{display:flex;align-items:center;gap:.85cqw;min-width:0}
-  .status .lbl{color:var(--dim);font-weight:300}
+  .status{display:flex;align-items:center;gap:.85cqw;min-width:0;flex:1}
+  .status .lbl{color:var(--dim);font-weight:300;flex:0 0 auto}
   .status .val{color:var(--good);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .status .val.bad{color:var(--time)}
   .tick{flex:0 0 auto;width:1.05em;height:1.05em;display:block;color:var(--good)}
+  /* Everything after "Status:" (the mark, the word and the reason) is one line.
+     When it fits it stands still. When it does not, and the viewer has not asked
+     for less motion, the script adds .scrolling: the line and a copy of it run
+     left together, and the track comes round again every length-plus-gap, so
+     there is no stop between passes. The rest is the animation's delay (--rest),
+     which applies once, before the first pass. Without .scrolling (reduced motion) the
+     reason is cut with an ellipsis instead. */
+  .ticker{flex:1;min-width:0;overflow:hidden}
+  .track{display:flex}
+  .line{display:flex;align-items:center;gap:.85cqw;min-width:0}
+  .line + .line{display:none}
+  .scrolling .track{width:max-content;will-change:transform;animation:ticker var(--dur,10s) linear var(--rest,3s) infinite}
+  .scrolling .line{flex:none;margin-right:3em}
+  .scrolling .line + .line{display:flex}
+  .scrolling .val{overflow:visible;text-overflow:clip}
+  @keyframes ticker{to{transform:translateX(-50%)}}
   .src{color:var(--dimmer);font-weight:300;flex:0 0 auto;display:flex;align-items:center;gap:1cqw}
   .mode{
     font-size:.82em;
@@ -177,12 +198,13 @@
     .rule{margin:16px 0 14px;height:2px}
     .cols{grid-template-columns:1fr;gap:18px}
     .divider{height:1px;width:100%}
-    .colhead{gap:8px;margin-bottom:8px}
+    .colhead{margin-bottom:8px}
     .colhead .dir{font-size:16px}
-    .colhead .towards{font-size:12px}
+    :root{--row:37px;--drop:4px}
     .rows{gap:0}
-    .row{gap:12px;padding:6px 0;flex:0 0 auto;height:34px}
-    .row:not(:last-child)::before{left:4px;height:34px}
+    .row{gap:12px;padding:6px 0;flex:0 0 auto;height:var(--row)}
+    .row:not(:last-child)::before{left:4px;height:var(--row)}
+    .line{gap:8px}
     .dot{width:8px;height:8px}
     .dest,.mins{font-size:15px}
     .empty{font-size:14px}
@@ -221,7 +243,6 @@
     <section class="col">
       <div class="colhead">
         <span class="dir" id="dirAName">SOUTHBOUND</span>
-        <span class="towards">towards <span id="dirATowards">Heathrow</span></span>
       </div>
       <div class="rows" id="colA"></div>
     </section>
@@ -231,7 +252,6 @@
     <section class="col">
       <div class="colhead">
         <span class="dir" id="dirBName">NORTHBOUND</span>
-        <span class="towards">towards <span id="dirBTowards">Cockfosters</span></span>
       </div>
       <div class="rows" id="colB"></div>
     </section>
@@ -240,12 +260,18 @@
   <div class="foot">
     <div class="status">
       <span class="lbl">Status:</span>
-      <svg class="tick" viewBox="0 0 20 20" role="img" aria-label="status icon" id="tick">
-        <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
-        <path id="tickPath" d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round"></path>
-      </svg>
-      <span class="val" id="status">Good Service</span>
+      <div class="ticker" id="ticker">
+        <div class="track" id="track">
+          <div class="line" id="line">
+            <svg class="tick" viewBox="0 0 20 20" role="img" aria-label="status icon" id="tick">
+              <circle cx="10" cy="10" r="8.6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+              <path id="tickPath" d="M6.2 10.3 L8.9 13 L13.9 7.2" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+            <span class="val" id="status">Good Service</span>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="src">
       <span class="mode" id="mode">sample data</span>
@@ -269,22 +295,27 @@ const APP_KEY    = "";              // optional; free key raises the rate limit
 // Which way round the two columns read. "inbound" on the Piccadilly runs
 // towards Heathrow, "outbound" towards Cockfosters.
 const COLUMNS = [
-  { id: "A", api: "inbound",  name: "SOUTHBOUND", towards: "Heathrow" },
-  { id: "B", api: "outbound", name: "NORTHBOUND", towards: "Cockfosters" }
+  { id: "A", api: "inbound",  name: "SOUTHBOUND" },
+  { id: "B", api: "outbound", name: "NORTHBOUND" }
 ];
 
-const ROWS = 5;
+const ROWS = 4;
 const REFRESH_MS = 30000;
+
+// A status too long for its line: it rests this long, then runs left at this many
+// lengths of its own text size a second (the Pi board's pace), and comes round again.
+const TICKER_REST_S = 3;
+const TICKER_EM_PER_S = 3.2;
 
 // Shown until live data arrives, and kept if the network is unavailable.
 const SAMPLE = {
   inbound: [
     ["Heathrow Terminal 5", 2], ["Heathrow Terminal 4", 6], ["Heathrow Terminal 5", 11],
-    ["Heathrow Terminal 4", 15], ["Heathrow Terminal 5", 20]
+    ["Heathrow Terminal 4", 15]
   ],
   outbound: [
     ["Cockfosters", 1], ["Arnos Grove", 4], ["Oakwood", 7],
-    ["Southgate", 10], ["Bounds Green", 14]
+    ["Southgate", 10]
   ]
 };
 
@@ -461,18 +492,15 @@ function columnsFor(arrivals) {
       if (next) labels[i] = next;
     }
   });
-  const cols = groups.map(([c, mine], i) => {
-    const tows = new Set(mine.map((a) => tidyTowards(a.towards)).filter(Boolean));
-    // the trains say where they go; the config's towards is only for before they do
-    let towards = (tows.size === 1 ? [...tows][0] : "") || (c && c.towards) || "";
-    if (labels[i].includes("TOWARDS")) towards = "";
-    return { label: labels[i], towards, rows: mine.map((a) => [rowText(a), Math.round(a.timeToStation / 60)]) };
-  });
+  // The heading is the direction and nothing else: the rows say where each train goes.
+  const cols = groups.map(([c, mine], i) => (
+    { label: labels[i], rows: mine.map((a) => [rowText(a), Math.round(a.timeToStation / 60)]) }
+  ));
   // One direction running and the other nameable: keep its column and let it say
   // it is empty, rather than letting the running one go full width.
   if (cols.length === 1 && COLUMNS.length === 2) {
     const other = OPPOSITE[titleCase(cols[0].label)];
-    if (other) cols.push({ label: other.toUpperCase(), towards: "", rows: [] });
+    if (other) cols.push({ label: other.toUpperCase(), rows: [] });
   }
   return cols;
 }
@@ -507,6 +535,67 @@ function tidyReason(reason) {
     if (out.toLowerCase().startsWith(lead.toLowerCase())) { out = out.slice(lead.length); break; }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------
+// The status line. Everything after "Status:" (the mark, the word and the reason)
+// is one line. If it fits it stands still. If it does not, the line and a copy of
+// it run left together inside .ticker, and the track comes round every one line
+// plus a gap, so the loop has no stop in it; the rest at the start is the CSS
+// animation's one-off delay. Someone who asked for less motion gets the reason
+// cut with an ellipsis instead.
+// ---------------------------------------------------------------------
+const lessMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let statusKey = null;
+
+// Width the line wants, whether or not it has been squeezed to fit: the line's
+// own box, with its text swapped for the text's full width.
+function lineWants() {
+  const text = document.createRange();
+  text.selectNodeContents($("status"));
+  return $("line").getBoundingClientRect().width - $("status").getBoundingClientRect().width
+    + text.getBoundingClientRect().width;
+}
+
+function fitStatus(restart) {
+  const ticker = $("ticker");
+  if (restart) {
+    // a new status starts over with its rest, so the animation has to be cancelled
+    ticker.classList.remove("scrolling");
+    void ticker.offsetWidth;
+  }
+  const wants = lineWants();
+  // half a pixel of slack, so a line that fits to the pixel is not flipped on and off by rounding
+  const run = !lessMotion.matches && wants > ticker.getBoundingClientRect().width + 0.5;
+  if (run) {
+    const em = parseFloat(getComputedStyle($("line")).fontSize);
+    // one pass is the line plus its 3em gap; the animation's delay is the rest
+    $("track").style.setProperty("--dur", ((wants + 3 * em) / (TICKER_EM_PER_S * em)).toFixed(2) + "s");
+    $("track").style.setProperty("--rest", TICKER_REST_S + "s");
+  }
+  ticker.classList.toggle("scrolling", run);
+}
+
+function setStatus(text, why, good) {
+  // the same words again (every refresh): leave the line where it is, mid-pass
+  const key = [text, why, good].join("\n");
+  if (key === statusKey) return;
+  statusKey = key;
+  const el = $("status");
+  el.textContent = why ? text + " - " + why : text;
+  el.classList.toggle("bad", !good);
+  $("tick").style.color = good ? "" : "var(--time)";
+  $("tickPath").setAttribute("d", good ? TICK_D : BANG_D);
+  // the copy that runs behind the line, with no ids of its own and hidden from
+  // screen readers, which would otherwise read the status twice
+  const copy = $("line").cloneNode(true);
+  copy.removeAttribute("id");
+  copy.querySelectorAll("[id]").forEach((n) => n.removeAttribute("id"));
+  copy.setAttribute("aria-hidden", "true");
+  const track = $("track");
+  while (track.children.length > 1) track.lastElementChild.remove();
+  track.appendChild(copy);
+  fitStatus(true);
 }
 
 function paint(colId, entries, present = true) {
@@ -576,19 +665,13 @@ async function load() {
   ["A", "B"].forEach((id, i) => {
     const col = cols[i];
     $("dir" + id + "Name").textContent = col ? col.label : "";
-    $("dir" + id + "Towards").textContent = col ? col.towards : "";
-    $("dir" + id + "Towards").parentElement.style.visibility = col && col.towards ? "" : "hidden";
     paint("col" + id, col ? col.rows : [], !!col);
   });
 
   const text = s ? s.statusSeverityDescription : "Service status unknown";
   const why = s ? tidyReason(s.reason) : "";
   const good = !!s && ["good service", "no issues"].includes(text.toLowerCase());
-  const el = $("status");
-  el.textContent = why ? text + " - " + why : text;
-  el.classList.toggle("bad", !good);
-  $("tick").style.color = good ? "" : "var(--time)";
-  $("tickPath").setAttribute("d", good ? TICK_D : BANG_D);
+  setStatus(text, why, good);
 
   lastGood = new Date();
   $("updated").textContent = ago(lastGood, lastGood);
@@ -613,10 +696,16 @@ async function refresh() {
 
 $("stationName").textContent = STATION;
 $("dirAName").textContent = COLUMNS[0].name;
-$("dirATowards").textContent = COLUMNS[0].towards;
 $("dirBName").textContent = COLUMNS[1].name;
-$("dirBTowards").textContent = COLUMNS[1].towards;
 
+// The line's width depends on the room (the window) and on the font, which
+// arrives after the page; either one can change whether it fits.
+new ResizeObserver(() => fitStatus(false)).observe($("ticker"));
+document.fonts.ready.then(() => fitStatus(false));
+document.fonts.addEventListener("loadingdone", () => fitStatus(false));
+lessMotion.addEventListener("change", () => fitStatus(false));
+
+setStatus("Good Service", "", true);   // makes the copy the loop needs, if the line ever overflows
 showSample();
 tickClock();
 $("updated").textContent = hhmm(new Date());

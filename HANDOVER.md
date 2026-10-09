@@ -31,7 +31,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | The Pi itself | Plugged in at Raoul's on 9 Oct. It came up after the 6 Oct unplug with no card trouble. `throttled=0x0`, 47 C with the scroll running. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
-| Tested | 201 offline checks (`pi/test_rotation.py`), 18 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
+| Tested | 201 offline checks (`pi/test_rotation.py`), 38 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
@@ -46,7 +46,7 @@ cd ~/Downloads/piccadilly-board && git checkout main && git pull
 cd pi && python3 test_rotation.py            # 201 checks, no network needed
 python3 board.py --png /tmp/b.png            # live TfL: the Mac can reach it, this session could not
 python3 board.py --png /tmp/s.png --setup    # the WiFi setup screen
-cd .. && python3 test_index.py               # the web version, in headless Chrome (18 checks)
+cd .. && python3 test_index.py               # the web version, in headless Chrome (38 checks)
 ```
 
 Then, in this order:
@@ -271,7 +271,10 @@ its reason in the message.
   One station, TfL only. As of tonight it carries the Pi board's column logic
   (headings from the trains, an empty direction kept, the worst status with its
   cause, "no live data" with an age) and `test_index.py` at the root drives it
-  in headless Chrome.
+  in headless Chrome. It also follows the 9 Oct screen changes above: a heading
+  with no "towards", four trains a side, and a status too long for its line
+  scrolls (a CSS animation, no script per frame; reduced motion cuts it with an
+  ellipsis).
 - `case/sled.py` - the Pi mounting sled (manifold3d). `cd case && python3 sled.py`
   rebuilds the three STLs.
 - Artifacts, private to Raoul's claude.ai account (update in place with `url=`):
