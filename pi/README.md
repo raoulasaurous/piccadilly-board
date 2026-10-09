@@ -39,7 +39,8 @@ sudo reboot
 
 The board comes up on the screen about 30 s after power. The settings page is
 at **http://tubeboard.local:8080** on any phone on the same WiFi, and for the
-first three minutes after a boot the board's footer says so, with the IP.
+first minute after it joins the WiFi the board's footer says so, with the IP, in
+a box with a countdown.
 
 ## Deploy a change
 
@@ -68,8 +69,8 @@ only**, tap it, tap the line. Done. The board redraws within a minute.
 
 Under **Boards on the screen**, add a station. With two or more the screen cycles
 between them, 30 seconds each by default (a box under the list sets anything
-from 5 to 300), and a row of dots under the clock says which board is up and how
-many there are. **Remove** takes one off. Eight is the most, and the last one
+from 5 to 300), and a row of dots at the bottom right, in each board's line
+colour, says which board is up and how many there are. **Remove** takes one off. Eight is the most, and the last one
 cannot be removed.
 
 A station on two lines is two boards: Highbury & Islington on the Victoria line
