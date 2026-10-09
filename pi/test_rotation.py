@@ -228,7 +228,7 @@ def test_views():
     check("and says so in the journal", "not a list" in err.getvalue())
     check("rows is coerced and clamped: a quoted number, a zero, a hundred",
           (views_for({"rows": "5"})[0]["rows"], views_for({"rows": 0})[0]["rows"],
-           views_for({"rows": 99})[0]["rows"], views_for({"rows": "lots"})[0]["rows"]) == (5, 1, 8, 5))
+           views_for({"rows": 99})[0]["rows"], views_for({"rows": "lots"})[0]["rows"]) == (5, 1, 8, 4))
     with open(board.SETTINGS_PATH, "w") as f:
         f.write("[1, 2, 3]")
     err = io.StringIO()
@@ -1178,6 +1178,48 @@ def test_ticker():
     board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, None, False, ticker=gone)
     check("no live data: nothing to scroll", "strip" not in gone)
 
+    # four rows: five-row spacing, the same text, centred under the headings
+    def dots(rows_n):
+        im = board.render(1920, 1080, dict(v, rows=rows_n), [{"label": "NORTHBOUND", "towards": "",
+                          "rows": [("Uxbridge", 60 * k) for k in range(rows_n)]}] * 2,
+                          "Good Service", True, "", at, at, True)
+        colour = board.LINE_COLOURS[v["line"]]
+        ys = [y for y in range(280, 930) if im.getpixel((58, y)) == colour]   # the rows, not the roundel
+        runs = []
+        for y in ys:
+            if runs and y == runs[-1][-1] + 1:
+                runs[-1].append(y)
+            else:
+                runs.append([y])
+        return [sum(r) / len(r) for r in runs]
+    five, four = dots(5), dots(4)
+    gaps5 = [b - a for a, b in zip(five, five[1:])]
+    gaps4 = [b - a for a, b in zip(four, four[1:])]
+    check("four rows: four trains, at the five-row spacing", len(four) == 4 and len(five) == 5
+          and max(abs(g - gaps5[0]) for g in gaps4 + gaps5) <= 1, (gaps5, gaps4))
+    probe = board.ImageDraw.Draw(board.Image.new("RGB", (8, 8)))
+    u2 = 2 * 19.2
+    top2 = 2 * (2.5 * 19.2 + 7.3 * 19.2 + 1.8 * 19.2)
+    head = probe.textbbox((0, top2), "NORTHBOUND", font=board.font("bold", 2.6 * u2))[3] / 2
+    rule = 1080 - 2.5 * 19.2 - 4.9 * 19.2
+    check("centred between the column heading and the footer rule",
+          abs((four[0] + four[-1]) / 2 - (head + rule) / 2) <= 2, ((four[0] + four[-1]) / 2, (head + rule) / 2))
+
+    # the settings card: boxed, with its seconds counting down beside it
+    card = {}
+    shot = board.render(1920, 1080, v, cols, "Good Service", True, "", at, at, True,
+                        address=("tubeboard", "192.168.1.23"), address_left=42.3, ticker=card)
+    c = card.get("count")
+    check("the settings card hands its seconds to the ticker", c is not None and c["box"][2] <= 1920, card)
+    probe_t = board.Ticker(None, 19.2)
+    probe_t.count, probe_t.count_n = c, 43
+    check("and the frame's '43s' is the ticker's '43s', the same pixels",
+          shot.crop(c["box"]).tobytes() == probe_t.countdown().tobytes())
+    probe_t.count_n = 9
+    check("which changes when the number does", shot.crop(c["box"]).tobytes() != probe_t.countdown().tobytes())
+    row = shot.crop((1000, int((1080 - 2.5 * 19.2 - 4.9 * 19.2 + 1080) / 2) - 25, c["box"][0], 1080))
+    check("the address sits in a white box", board.WHITE in {k for _, k in row.getcolors(maxcolors=1 << 16)})
+
     # the ticker against a screen made of a file, on a clock the test turns
     class FB:
         w, h, bpp = 1920, 1080, 16
@@ -1240,6 +1282,17 @@ def test_ticker():
             t.set({})
         clock[0] += 60
         check("nothing to scroll: the ticker writes nothing", not t.tick())
+        # the countdown, once a second as the number changes
+        with t.lock:
+            t.set(dict(card, count_until=clock[0] + 42.3))
+        check("the seconds are drawn as soon as the card is up",
+              t.tick() and t.count_n == 43 and np.array_equal(fb.read(c["box"]), t.count_px))
+        check("and not again within the same second", not t.tick())
+        clock[0] += 1.0
+        check("a second later, one less", t.tick() and t.count_n == 42)
+        clock[0] += 60
+        t.tick()
+        check("it never shows 0s; the board redraws without the card at the end", t.count_n == 1)
 
         # show() with the patch: the frame on the screen has the window in it
         real = object.__new__(board.Framebuffer)

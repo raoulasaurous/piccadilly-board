@@ -12,6 +12,7 @@ rewrites that file; the board notices within one refresh.
 """
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -63,7 +64,7 @@ DEFAULTS = {
         {"direction": "inbound", "label": "", "towards": ""},
         {"direction": "outbound", "label": "", "towards": ""},
     ],
-    "rows": 5,
+    "rows": 4,
     "refresh_seconds": 30,
     # More than one board. Each entry is {"line", "station_id", "station_name"} and
     # the screen shows each in turn for rotate_seconds. An empty list means one
@@ -727,7 +728,7 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           rotation=None, diag=None, address=None, ss=2, ticker=None):
+           rotation=None, diag=None, address=None, ss=2, ticker=None, address_left=None):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -744,11 +745,14 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         inner = {"align": ss} if ticker is not None else None
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
                      status_why, now, updated, live, rotation=rotation, diag=diag,
-                     address=address, ss=1, ticker=inner)
+                     address=address, ss=1, ticker=inner, address_left=address_left)
         if inner and inner.get("strip") is not None:
             x0, y0, x1, y1 = inner["box"]
             ticker.update(box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss),
                           strip=inner["strip"].reduce(ss), key=inner["key"])
+        if inner and inner.get("count"):
+            x0, y0, x1, y1 = inner["count"]["box"]
+            ticker["count"] = dict(inner["count"], box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss), ss=ss)
         return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -806,19 +810,42 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     # the left, when we last heard from TfL on the right. From a sofa the eye
     # measures to the edge of the screen, not to the text margin.
     fy = uy = (foot_rule + H) / 2
+    fupd = font("regular", 1.35 * u)
     if address and (address[0] or address[1]):
-        # For the first minutes after a boot this corner carries the board's own
+        # For the first minute after a boot this corner carries the board's own
         # address instead of the update age. The settings page is findable only by
         # someone who knows where to look, and this is the one moment they are looking.
+        # It sits in a slim white box, and beside it, in the update age's grey, how
+        # long it will stay (Raoul, 9 Oct 2026), so nobody copies half of it down.
         host, ip = address
-        upd = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
-                                                     f"http://{ip}:8080" if ip else "") if x)
+        card = "Settings: " + " or ".join(x for x in (f"http://{host}.local:8080" if host else "",
+                                                      f"http://{ip}:8080" if ip else "") if x)
+        card_right = W - pad
+        if address_left is not None:
+            n = max(1, math.ceil(address_left))
+            d.text((W - pad, uy), f"Hides in {n}s", font=fupd, fill=DIM, anchor="rm")
+            widest = text_w(d, f"Hides in {ADDRESS_SECONDS}s", fupd)
+            card_right = W - pad - widest - 1.4 * u
+            if ticker is not None:
+                # The ticker redraws the seconds once a second; it gets the box they
+                # live in, on multiples of the supersampling factor like the strip's.
+                a = ticker.get("align", 1)
+                cx0 = int((W - pad - widest - 0.3 * u) // a * a)
+                cx1 = int(-(-min(W, W - pad + 0.3 * u) // a) * a)
+                cy0, cy1 = int((uy - 1.1 * u) // a * a), int(-(-(uy + 1.1 * u) // a) * a)
+                ticker["count"] = {"box": (cx0, cy0, cx1, cy1), "right": W - pad - cx0,
+                                   "mid": uy - cy0, "size": 1.35 * u}
+        bp = 0.6 * u
+        bx0 = card_right - text_w(d, card, fupd) - 2 * bp
+        d.rectangle([bx0, uy - 1.25 * u, card_right, uy + 1.25 * u], outline=WHITE,
+                    width=max(1, round(0.05 * u)))
+        d.text((card_right - bp, uy), card, font=fupd, fill=DIM, anchor="rm")
+        right_edge = bx0 - 2.0 * u
     else:
         upd = "Updated " + ago(updated, now)
-    fupd = font("regular", 1.35 * u)
-    d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
-    # Everything on the left of this line has to stop before the timestamp.
-    right_edge = W - pad - text_w(d, upd, fupd) - 2.0 * u
+        d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
+        # Everything on the left of this line has to stop before the timestamp.
+        right_edge = W - pad - text_w(d, upd, fupd) - 2.0 * u
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
@@ -896,7 +923,13 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     col_w = (W - 2 * pad - gap * (n - 1)) / n
     rows_n = max(1, settings["rows"])
     rows_top = top + 3.2 * u
-    step = (foot_rule - 1.2 * u - rows_top) / rows_n
+    # Spaced as five rows whatever the count, and the text the same size: fewer rows
+    # sit in the middle of the space between the headings and the footer rule rather
+    # than spreading out to fill it (Raoul, 9 Oct 2026: four trains, not five).
+    step = (foot_rule - 1.2 * u - rows_top) / max(5, rows_n)
+    if rows_n < 5:
+        head_base = d.textbbox((0, top), "NORTHBOUND", font=font("bold", 2.6 * u))[3]
+        rows_top = (head_base + foot_rule) / 2 - step * rows_n / 2
     for i, c in enumerate(cols):
         x0 = pad + i * (col_w + gap)
         if i:
@@ -1115,6 +1148,9 @@ class Ticker:
     def __init__(self, fb, u):
         self.fb = fb
         self.lock = threading.Lock()
+        self.count = None         # the settings card's "Hides in Ns", redrawn as N changes
+        self.count_n = None
+        self.count_px = None
         self.step = max(1, round(6.0 * u / self.FPS))    # about 6% of the width a second
         self.spec = None
         self.key = None
@@ -1124,6 +1160,10 @@ class Ticker:
 
     def set(self, spec):
         """What render() handed back for the frame about to be shown. Lock held."""
+        c = (spec or {}).get("count")
+        until = (spec or {}).get("count_until")
+        self.count = dict(c, until=until) if c and until is not None else None
+        self.count_n = self.count_px = None
         if not spec or spec.get("strip") is None:
             self.spec = self.key = None
             return
@@ -1148,10 +1188,28 @@ class Ticker:
             x0, y0, x1, y1 = self.spec[0]
             v[y0:y1, x0:x1] = self.window()
 
+    def countdown(self):
+        """The seconds box for the current N, drawn as render() draws it: at the
+        frame's supersampling and reduced, so the digits match the frame's."""
+        c, ss = self.count, self.count.get("ss", 1)
+        x0, y0, x1, y1 = c["box"]
+        img = Image.new("RGB", ((x1 - x0) * ss, (y1 - y0) * ss), BG)
+        ImageDraw.Draw(img).text((c["right"], c["mid"]), f"Hides in {self.count_n}s",
+                                 font=font("regular", c["size"]), fill=DIM, anchor="rm")
+        return img.reduce(ss) if ss > 1 else img
+
     def tick(self):
         """One step. Lock held. True if the screen was written."""
+        wrote = False
+        if self.count is not None:
+            n = max(1, math.ceil(self.count["until"] - time.monotonic()))
+            if n != self.count_n:
+                self.count_n = n
+                self.count_px = pack565(self.countdown())
+                self.fb.write_box(self.count["box"], self.count_px)
+                wrote = True
         if not self.spec or time.monotonic() < self.rest_until:
-            return False
+            return wrote
         self.off += self.step
         if self.off >= self.spec[2]:
             # round to the start, which is where it rests
@@ -1331,13 +1389,17 @@ def main():
                     host_ip = netdiag.address()    # the IP can arrive a while after boot
                     if host_ip[1]:
                         addr["value"], addr["since"] = host_ip, time.monotonic()
-                card = addr["since"] is not None and time.monotonic() - addr["since"] < ADDRESS_SECONDS
+                left = None if addr["since"] is None else ADDRESS_SECONDS - (time.monotonic() - addr["since"])
+                card = left is not None and left > 0
+                if card and spec is not None:
+                    spec["count_until"] = addr["since"] + ADDRESS_SECONDS
                 # this board's own refusal first, the network's verdict otherwise
                 diag = None if b["live"] else (b["diag"] or net["diag"])
                 frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
                                b["status_why"], now, b["updated"], b["live"],
                                rotation=rotation, diag=diag,
-                               address=addr["value"] if card else None, ticker=spec)
+                               address=addr["value"] if card else None, ticker=spec,
+                               address_left=left if card else None)
             if ticker:
                 with ticker.lock:
                     ticker.set(spec)
@@ -1427,6 +1489,11 @@ def main():
                  refresh_s - (time.monotonic() - b["last_fetch"])]
         if len(views) > 1:
             waits.append(rotate_s - (time.monotonic() - last_rotate))
+        if addr["since"] is not None:
+            # redraw as the settings card runs out, not up to ten seconds later
+            card_end = addr["since"] + ADDRESS_SECONDS - time.monotonic()
+            if card_end > 0:
+                waits.append(card_end)
         time.sleep(max(1.0, min(waits)))
 
 if __name__ == "__main__":

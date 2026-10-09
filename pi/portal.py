@@ -280,7 +280,7 @@ def home(msg=""):
         head = (f'<span>Showing</span><br><b>{esc(s.get("station_name","?"))}</b>'
                 f'<br><span>{esc(line_name(s.get("line","?")))} line, ')
     body += (f'<div class="now">{head}'
-             f'{esc(s.get("rows",5))} trains each way, refresh every {esc(s.get("refresh_seconds",30))} s'
+             f'{esc(s.get("rows",4))} trains each way, refresh every {esc(s.get("refresh_seconds",30))} s'
              f'<br>brightness {esc(s.get("brightness",100))}%'
              + (f', dimming to {esc(s.get("brightness_dim",30))}% at {esc(s.get("dim_from","21:00"))}'
                 if s.get("dim_enabled", True) else ', no dimming')
@@ -373,7 +373,7 @@ def home(msg=""):
              'frame, so this is how brightness is set. Changes apply within half a minute.</small>')
 
     body += ('<h2>Rows and refresh</h2><form method="post" action="/save-misc">'
-             f'<label>Trains per column</label><input type="text" name="rows" value="{esc(s.get("rows",5))}">'
+             f'<label>Trains per column</label><input type="text" name="rows" value="{esc(s.get("rows",4))}">'
              f'<label>Refresh every (seconds, 20 or more)</label><input type="text" name="refresh_seconds" value="{esc(s.get("refresh_seconds",30))}">'
              '<button type="submit">Save</button></form>')
     return body
@@ -640,7 +640,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send('<div class="err">Seconds must be a number.</div>' + home())
         elif self.path == "/save-misc":
             try:
-                s["rows"] = max(1, min(8, int(g("rows", "5"))))
+                s["rows"] = max(1, min(8, int(g("rows", "4"))))
                 s["refresh_seconds"] = max(20, min(300, int(g("refresh_seconds", "30"))))
             except ValueError:
                 return self._send('<div class="err">Numbers only.</div>' + home())
