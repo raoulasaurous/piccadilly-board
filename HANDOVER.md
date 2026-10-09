@@ -466,6 +466,16 @@ with a sentence, never silently overwritten.
 
 ## Before it goes to the recipient
 
+`sudo python3 /opt/tubeboard/portal.py --handover-check` says which of these is
+still to do. It only reads: each line starts `OK` or `TO DO`, and the last line
+gives the order. It covers the saved WiFi (names on the terminal only), the age of
+the console password, whether Pi Connect is signed in, the SSH keys (comments
+only), the hotspot's name, the rail key (never shown), the boards, and the
+self-updater timer if there is one. It cannot see the phone test, so that is
+always a step. Run it again after each step.
+
+The list below is the order to work in; the check puts the WiFi last.
+
 1. **Forget the WiFi** from the settings page or `sudo python3 portal.py
    --forget-wifi`. Otherwise the board carries this house's password, and never
    raises the setup hotspot at theirs.
