@@ -1,0 +1,16 @@
+[Unit]
+Description=Tube board update: install main if it moved, keep it only if the board still works
+# The fetch needs the network. Only this unit waits for it: the timer starts it, not the boot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# so every print lands in the journal, not in a buffer nobody reads
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/tubeboard/updater.py --timer
+# install.sh may take 15 minutes, the health check 3, and a rollback 3 more
+TimeoutStartSec=40min
+# /var/lib/tubeboard: the commits that failed here, and one line per run
+StateDirectory=tubeboard
+User=root

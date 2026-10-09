@@ -1,0 +1,13 @@
+[Unit]
+Description=Tube board update, each night
+
+[Timer]
+# 04:00 local, give or take half an hour: the board restarts with the new code, and
+# its settings card shows for a minute, when nobody is looking
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30min
+# a board that was off at 04:00 catches up when it next starts
+Persistent=true
+
+[Install]
+WantedBy=timers.target

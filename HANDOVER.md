@@ -27,11 +27,11 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Area | State |
 |---|---|
 | `main` | PRs #1-#4, then the 7 Oct rail fixes and the 9 Oct screen changes (below), all pushed. |
-| **What the Pi runs** | **`main` as of 9 Oct** (`git log -1` in `~/piccadilly-board` on the Pi says which commit), installed into `/opt/tubeboard`. Dated backup of the pre-PR-#1 code: `/opt/tubeboard.bak-2026-10-09`. |
+| **What the Pi runs** | **`main` as of 9 Oct** (`git log -1` in `~/piccadilly-board` on the Pi says which commit), installed into `/opt/tubeboard`. Dated backup of the pre-PR-#1 code: `/opt/tubeboard.bak-2026-10-09`. **No self-updater yet**: it arrives with the next deploy by hand (see "Deploying"). |
 | The Pi itself | Plugged in at Raoul's on 9 Oct. It came up after the 6 Oct unplug with no card trouble. `throttled=0x0`, 47 C with the scroll running. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
-| Tested | 201 offline checks (`pi/test_rotation.py`), 18 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
+| Tested | 284 offline checks (`pi/test_rotation.py`, the updater's included), 18 in headless Chrome (`test_index.py`). A three-lens review of the 9 Oct scroll, each finding verified, some on the Pi; all fixed. |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
@@ -43,7 +43,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 
 ```bash
 cd ~/Downloads/piccadilly-board && git checkout main && git pull
-cd pi && python3 test_rotation.py            # 201 checks, no network needed
+cd pi && python3 test_rotation.py            # 284 checks, no network needed
 python3 board.py --png /tmp/b.png            # live TfL: the Mac can reach it, this session could not
 python3 board.py --png /tmp/s.png --setup    # the WiFi setup screen
 cd .. && python3 test_index.py               # the web version, in headless Chrome (18 checks)
@@ -55,15 +55,93 @@ Then, in this order:
    feed's own account of Drayton Park and what the board makes of it; it worked
    from the Mac. If the URL is ever refused again, the product path has moved: see
    "National Rail boards" below.
-2. **Deploy** (next section). The Pi must be plugged in and online.
+2. **Deploy by hand once** (next section). The Pi must be plugged in and online.
+   That deploy installs the nightly updater; after it, merging to `main` is deploying.
 3. **Add the stations** over the same shell (in the deploy section).
 4. Ask for a photo of the screen. Nobody has seen any of this on the real one.
 
-## Deploying: merging is not deploying
+## Deploying: what is merged to main reaches the wall the next night
 
-There is no self-update. The board runs from `/opt/tubeboard/`, which
-`install.sh` copies into. It does not run from the git clone. Tonight's change
-touched every program, so it is the installer run, not a one-file copy.
+**Warning: whatever is merged to `main` is on the recipient's wall the next
+night**, with nobody touching the Pi. Merge only what has passed
+`test_rotation.py` and has been seen to work (a `--png` at the least). The health
+check below catches a board that stops drawing or fetching. It does not catch a
+board that draws the wrong thing.
+
+The board runs from `/opt/tubeboard/`, which `install.sh` copies into. It does
+not run from the git clone. Each night `tubeboard-update.timer` runs
+`/opt/tubeboard/updater.py --timer` as root, at 04:00 local and up to 30 minutes
+later. A Pi that was off at that time runs it when it next starts. An install
+restarts the board, so the settings card shows for a minute then.
+
+**The Pi does not have it yet.** `install.sh` installs it, so it arrives with the
+next deploy by hand (below). From then on the timer does the deploys.
+
+What one run does, in order:
+
+1. `"auto_update": false` in `/opt/tubeboard/settings.json`: it stops here.
+2. As the clone's owner (`runuser`): `git fetch origin main`. If `main`, the
+   clone and `/opt/tubeboard/VERSION` are the same commit, it stops. It also
+   stops, and changes nothing, for local changes in the clone, a branch other
+   than `main`, commits that are not on `main`, or a commit it rolled back before.
+3. It notes whether the board is live (a good fetch in the last 5 minutes) and
+   whether the settings page answers on port 8080.
+4. It copies `/opt/tubeboard` and the four systemd units to
+   `/opt/tubeboard.bak-update`. That one backup is replaced each time; the dated
+   backups are never touched.
+5. `git merge --ff-only` to that exact commit, as the clone's owner.
+6. `SKIP_COMITUP=1 bash install.sh` as root, with a 15-minute limit. A full run
+   restarts comitup, which can drop the WiFi.
+7. The health check, for up to 3 minutes. The new `updater.py` must start. The
+   board must be a new process that runs the new commit, must draw for 20 s with
+   no failed draw, and must be live again if it was live before. The settings
+   page must answer if it answered before.
+8. If the install or the check fails, it rolls back (below).
+
+The board writes `/run/tubeboard/health.json` on every frame: pid, start time,
+commit (from `/opt/tubeboard/VERSION`, which `install.sh` writes), draws, failed
+draws, last draw, last good fetch. It is on tmpfs, so the SD card sees none of it.
+
+**Rollback** happens by itself. The updater records the commit in
+`/var/lib/tubeboard/bad-commits` with the reason. It puts
+`/opt/tubeboard.bak-update` back as `/opt/tubeboard`, keeps the `settings.json`
+that is there now, and puts the old units back. It restarts both services, resets
+the clone to the commit before, and logs whether the old code draws again. The
+run ends with `ROLLED BACK` and the reason in the log, and exit code 3. A bad
+commit is never tried again; the next commit merged to `main` is. A run that a
+power cut stops part-way is put right at the start of the next run, and that
+commit is not marked bad.
+
+An install that fails for a reason that is not the commit's (apt, the network)
+also marks the commit bad. To try it again, delete its line in `bad-commits` and
+run the updater by hand. A commit that changes the kernel command line needs a
+reboot: `install.sh` says so in the log, and the updater does not reboot.
+
+**Stop it:** untick **Install new versions overnight** on the settings page, or
+`sudo python3 /opt/tubeboard/portal.py --auto-update off` (`on` starts it again).
+`sudo systemctl disable --now tubeboard-update.timer` also stops it, but the next
+`install.sh` turns the timer on again; the setting stays.
+
+**Run it by hand:**
+
+```bash
+sudo python3 /opt/tubeboard/updater.py --now   # update now; runs even when auto_update is off
+python3 /opt/tubeboard/updater.py --dry-run    # what a run would do; it fetches main and changes nothing else
+```
+
+**See what it did:**
+
+```bash
+journalctl -u tubeboard-update                 # every step, since the last boot only (journald is volatile)
+cat /var/lib/tubeboard/update-history          # one line per run, kept across reboots
+cat /var/lib/tubeboard/bad-commits             # the commits it rolled back, and why
+systemctl list-timers tubeboard-update.timer   # when it runs next
+cat /run/tubeboard/health.json                 # the board's own account, now
+```
+
+Exit codes: 0 updated or nothing to do, 1 stopped or an error, 3 rolled back.
+
+### By hand: the first time, and when the updater stops
 
 **Nobody needs to be in the house.** Raoul opens connect.raspberrypi.com, picks
 `tubeboard`, opens the remote shell and pastes. This works while the Pi is
@@ -80,9 +158,10 @@ cd ~/piccadilly-board && git status --short && git pull      # status should pri
 cd pi && sudo SKIP_COMITUP=1 bash install.sh
 ```
 
-The installer copies `board.py portal.py screen.py rail.py netdiag.py`, installs
-`python3-qrcode`, keeps `settings.json`, and restarts both services. It no longer
-asks for a reboot on every re-run (that was a bug). Then:
+The installer copies `board.py portal.py screen.py rail.py netdiag.py updater.py`,
+writes `VERSION`, installs `python3-qrcode`, keeps `settings.json`, restarts both
+services and turns on the nightly timer. It no longer asks for a reboot on every
+re-run (that was a bug). Then:
 
 ```bash
 cd /opt/tubeboard
@@ -107,10 +186,13 @@ write `settings.json` as root. Without it the command ends in one line saying
 so. Optional extra boards: `--add-station "Highbury & Islington" --line mildmay`
 (the Overground there, both ways) and `--line windrush`.
 
-**Rollback:**
+**Rollback by hand:**
 ```bash
 sudo cp /opt/tubeboard.bak-<date>/*.py /opt/tubeboard/ && sudo systemctl restart tubeboard tubeboard-portal
 ```
+`/opt/tubeboard.bak-update` is the updater's backup from its last install; the
+same command works with it in place of a dated one. The updater installs `main`
+again the next time `main` moves, so turn it off first if the old code must stay.
 The old `board.py` ignores the new keys in `settings.json` and shows the first
 TfL board on the rotation, so the settings can stay. The backup has no `rail.py`
 or `netdiag.py`; leave the new ones in place, the old programs never import them.
@@ -270,7 +352,8 @@ its reason in the message.
 ## Where things live
 
 - `pi/` - the Pi: `board.py`, `portal.py`, `rail.py`, `netdiag.py`, `screen.py`,
-  `install.sh`, `bench.sh`, `test_rotation.py`, the systemd units. `pi/README.md`
+  `updater.py`, `install.sh`, `bench.sh`, `test_rotation.py`, the systemd units
+  (the board, the portal, and the update service and its timer). `pi/README.md`
   is the user-facing guide and matches the code as of tonight.
 - `index.html` - the web version, live at raoulasaurous.github.io/piccadilly-board.
   One station, TfL only. As of tonight it carries the Pi board's column logic
@@ -307,7 +390,9 @@ its reason in the message.
   failed` in `journalctl -u tubeboard.service -b`; `cat
   /sys/class/graphics/fb0/virtual_size` must be `1920,1080`; `sudo ddcutil --brief
   getvcp 10` is the brightness. New tonight: `network:` lines in the journal say
-  what the WiFi was doing each time a fetch failed.
+  what the WiFi was doing each time a fetch failed. Once the updater is
+  installed: `cat /run/tubeboard/health.json` (the board) and
+  `cat /var/lib/tubeboard/update-history` (the nightly updates).
 
 ## Hardware facts that cost time to learn
 
@@ -355,11 +440,14 @@ In rough order:
 
 1. **A photo of the real screen** from a phone. The framebuffer has been read
    (the pixels are right); nobody has seen the colours on the panel itself.
-2. **A self-updater.** Offered four times, never built. A systemd timer that pulls
-   `main` and runs the installer would make merging equal deploying. Decide first
-   how it refuses a pull that lands broken code on a wall nobody can reach: a
-   health check after restart (both columns drawn within two minutes, else
-   restore the dated backup) is the minimum.
+2. **The self-updater is built (9 Oct), not yet on the Pi.** See "Deploying".
+   The next deploy by hand installs it. Then check on the Pi: `systemctl
+   list-timers` shows `tubeboard-update.timer`; `cat /run/tubeboard/health.json`
+   counts draws; `sudo python3 /opt/tubeboard/updater.py --dry-run` ends "a real
+   run would now..." or "nothing new". Unseen on hardware so far: a real run,
+   `runuser` with git in the clone, the restart under `RuntimeDirectory=`, and a
+   rollback. A deliberately broken commit on a branch, merged and then reverted,
+   is the way to see a rollback without risk to the wall.
 3. **`index.html` cannot rotate**, and its line name, colour and roundel are
    fixed to the Piccadilly in the markup. The direction bug it carried since
    19 Sept is fixed as of tonight. A one-destination board (the DLR shape) leaves
@@ -464,7 +552,8 @@ every 30 s, redraw every 10 s, rotation 30 s once there is more than one board.
 Brightness 100% from 07:00, 30% from 21:00. Off-overnight exists but is off.
 `screen.py` fails safe, and the board survives it not. New keys tonight:
 `source`, `stations`, `rotate_seconds`, `rail_api_key`, `rail_api_url`; an old
-file without them behaves as before. A hand edit that leaves a number where a
+file without them behaves as before. `auto_update` (9 Oct) is read by the updater
+only: missing or true means the nightly update runs, false stops it. A hand edit that leaves a number where a
 list goes, a quoted number, or a trailing comma is survived by the board (it
 keeps the old settings and says so in the journal) and refused by the portal
 with a sentence, never silently overwritten.
@@ -475,8 +564,9 @@ with a sentence, never silently overwritten.
    --forget-wifi`. Otherwise the board carries this house's password, and never
    raises the setup hotspot at theirs.
 2. Reset the console password (required, see "The Pi").
-3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect). Decide
-   whether Raoul's SSH key stays. Claude recommended keeping both, and saying so.
+3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect), and
+   that the board updates itself overnight from GitHub. Decide whether Raoul's SSH
+   key stays. Claude recommended keeping both, and saying so.
 4. **See the setup screen and the hotspot on a phone once.** On 14 Sept the
    join flow worked end to end but under the stock name; nobody has yet seen
    **TubeBoard-setup**, the QR, or the WIFI OK screen.

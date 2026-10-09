@@ -49,6 +49,11 @@ HOTSPOT_IP = "10.41.0.1"                        # where comitup's own page answe
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(HERE, "settings.json")
+# The board's account of itself, for the updater, which restarts it on new code and
+# must see that code drawing before it keeps it. /run is tmpfs (tubeboard.service's
+# RuntimeDirectory), so a write every frame costs the SD card nothing.
+HEALTH_PATH = "/run/tubeboard/health.json"
+VERSION_PATH = os.path.join(HERE, "VERSION")    # the commit install.sh installed
 TFL = "https://api.tfl.gov.uk"
 
 DEFAULTS = {
@@ -87,6 +92,9 @@ DEFAULTS = {
     "dim_from": "21:00",
     "off_from": "00:00",
     "off_until": "06:00",
+    # Install main overnight (updater.py, from tubeboard-update.timer); false stops it.
+    # The updater reads this from settings.json itself; the board never uses it.
+    "auto_update": True,
 }
 
 LINE_NAMES = {
@@ -1336,6 +1344,43 @@ class Ticker:
                     self.failed, self.spec, self.key = True, None, None
 
 
+class Health:
+    """What the updater reads to decide whether new code works: which process, which
+    commit, how many frames drawn and failed, and when the last frame and the last
+    good fetch were (wall times, so another process can compare them with its own
+    clock). Written whole and renamed into place, so a reader never sees half a
+    file. A board that cannot write it (a Mac, an old unit with no /run/tubeboard)
+    carries on without it."""
+
+    def __init__(self):
+        try:
+            with open(VERSION_PATH) as f:
+                version = f.read().strip() or None
+        except Exception:                       # noqa: BLE001
+            # missing, or not text: either way this runs before the first frame, and
+            # a raise here would be a restart loop
+            version = None
+        self.data = {"pid": os.getpid(), "started": time.time(), "version": version,
+                     "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None}
+
+    def fetched(self):
+        self.data["last_fetch_ok"] = time.time()
+
+    def drew(self, ok):
+        if ok:
+            self.data["draws"] += 1
+            self.data["last_draw"] = time.time()
+        else:
+            self.data["failed_draws"] += 1
+        try:
+            tmp = HEALTH_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.data, f)
+            os.replace(tmp, HEALTH_PATH)
+        except Exception:                       # noqa: BLE001
+            pass
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -1389,6 +1434,7 @@ def main():
         return
 
     fb = Framebuffer()
+    health = Health()
     ticker = None
     if getattr(fb, "bpp", 0) == 16 and hasattr(fb, "write_box"):
         ticker = Ticker(fb, fb.w / 100.0)
@@ -1516,12 +1562,15 @@ def main():
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
+            health.drew(False)
             print(f"draw failed ({draw_failures}):", e, file=sys.stderr, flush=True)
             # A black screen with a healthy-looking service is the worst outcome.
             # Bail out and let systemd restart us; if it is permanent the journal says why.
             if draw_failures >= 5:
                 print("giving up on the screen, restarting", file=sys.stderr, flush=True)
                 raise SystemExit(1)
+            return
+        health.drew(True)
 
     while True:
         changed_settings = settings.reload()
@@ -1563,6 +1612,7 @@ def main():
             try:
                 b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
                 b["updated"], b["live"], b["diag"] = dt.datetime.now(), True, None
+                health.fetched()
                 if b["failures"]:
                     print(f'fetch ok again ({v["station_name"]}, {v["line"]})', flush=True)
                 b["failures"], b["said"] = 0, None
