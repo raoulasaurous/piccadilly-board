@@ -851,45 +851,41 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         # would put an empty box on the wall and nobody would know why.
         r = 1.25 * u
         fbold = font("bold", 1.9 * u)
-
-        def status_line(dd, x, cy, room=None):
-            """The mark, the status and the reason after it, from x. With room, the
-            reason is cut to end there; without, the whole line is drawn."""
-            dd.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, round(0.17 * u)))
-            if good:
-                dd.line([(x + 0.52 * r, cy + 0.05 * r), (x + 0.88 * r, cy + 0.55 * r),
-                         (x + 1.5 * r, cy - 0.52 * r)], fill=col, width=max(1, round(0.19 * u)),
-                        joint="curve")
-            else:
-                dd.line([(x + r, cy - 0.52 * r), (x + r, cy + 0.12 * r)], fill=col, width=max(1, round(0.19 * u)))
-                dd.ellipse([x + r - 0.11 * u, cy + 0.42 * r, x + r + 0.11 * u, cy + 0.42 * r + 0.22 * u], fill=col)
-            x2 = x + 2 * r + 0.7 * u
-            dd.text((x2, cy), status_text, font=fbold, fill=col, anchor="lm")
-            # why, in the reader's own words
-            if status_why:
-                x2 += text_w(dd, status_text, fbold) + 0.7 * u
-                why = "- " + status_why if room is None else clip(dd, "- " + status_why, fs, room - x2)
-                if why and why != "-...":
-                    dd.text((x2, cy), why, font=fs, fill=DIM, anchor="lm")
-
-        whole = 2 * r + 0.7 * u + text_w(d, status_text, fbold) + (
-            0.7 * u + text_w(d, "- " + status_why, fs) if status_why else 0)
-        if ticker is not None and status_why and x + whole > right_edge:
-            # Too long for the line: hand it to the ticker whole, rather than cut it.
-            # Every edge is on a multiple of the supersampling factor, so the strip,
-            # reduced on its own, is the same pixels as the frame reduced around it.
-            a = ticker.get("align", 1)
-            bx0, bx1 = int((x - 0.4 * u) // a * a), int(right_edge // a * a)
+        d.ellipse([x, fy - r, x + 2 * r, fy + r], outline=col, width=max(1, round(0.17 * u)))
+        if good:
+            d.line([(x + 0.52 * r, fy + 0.05 * r), (x + 0.88 * r, fy + 0.55 * r),
+                    (x + 1.5 * r, fy - 0.52 * r)], fill=col, width=max(1, round(0.19 * u)),
+                   joint="curve")
+        else:
+            d.line([(x + r, fy - 0.52 * r), (x + r, fy + 0.12 * r)], fill=col, width=max(1, round(0.19 * u)))
+            d.ellipse([x + r - 0.11 * u, fy + 0.42 * r, x + r + 0.11 * u, fy + 0.42 * r + 0.22 * u], fill=col)
+        x2 = x + 2 * r + 0.7 * u
+        d.text((x2, fy), status_text, font=fbold, fill=col, anchor="lm")
+        # why, in the reader's own words, after a hyphen
+        x3 = x2 + text_w(d, status_text, fbold) + 0.7 * u
+        x4 = x3 + text_w(d, "- ", fs)               # where the reason itself starts
+        a = (ticker or {}).get("align", 1)
+        bx0, bx1 = int(x4 // a * a), int(right_edge // a * a)
+        if (ticker is not None and status_why and x3 + text_w(d, "- " + status_why, fs) > right_edge
+                and bx1 - bx0 >= 8 * u):
+            # Too long for the line: the mark, the status and the hyphen stay put, so
+            # "Severe Delays" is readable at a glance, and the reason after the hyphen
+            # goes to the ticker whole instead of being cut. Every edge of the box is on
+            # a multiple of the supersampling factor, so the strip, reduced on its own,
+            # is the same pixels as the frame reduced around it.
+            d.text((x3, fy), "-", font=fs, fill=DIM, anchor="lm")
             by0, by1 = int((fy - 1.7 * u) // a * a), int(-(-(fy + 1.7 * u) // a) * a)
-            lead = x - bx0
-            # one pass: the line, then a gap the width of a few words before it comes round
-            period = int(-(-(lead + whole + 6.0 * u) // a) * a)
+            lead = x4 - bx0
+            # one pass: the reason, then a gap the width of a few words before it comes round
+            period = int(-(-(lead + text_w(d, status_why, fs) + 6.0 * u) // a) * a)
             strip = Image.new("RGB", (period, by1 - by0), BG)
-            status_line(ImageDraw.Draw(strip), lead, fy - by0)
+            ImageDraw.Draw(strip).text((lead, fy - by0), status_why, font=fs, fill=DIM, anchor="lm")
             img.paste(strip.crop((0, 0, bx1 - bx0, by1 - by0)), (bx0, by0))
             ticker.update(box=(bx0, by0, bx1, by1), strip=strip, key=(status_text, status_why))
-        else:
-            status_line(d, x, fy, room=right_edge)
+        elif status_why:
+            why = clip(d, "- " + status_why, fs, right_edge - x3)
+            if why and why != "-...":
+                d.text((x3, fy), why, font=fs, fill=DIM, anchor="lm")
 
     # --- two columns
     top = rule_y + 1.8 * u

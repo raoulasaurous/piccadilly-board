@@ -1153,8 +1153,11 @@ def test_ticker():
     check("a long status hands its line to the ticker", spec.get("strip") is not None, sorted(spec))
     x0, y0, x1, y1 = spec["box"]
     u = 19.2
-    check("the box sits in the footer, clear of 'Status:' and the right-hand text",
-          130 < x0 < 300 and x1 < 1920 - 2.5 * u - 100 and 950 < y0 < y1 < 1080, spec["box"])
+    check("the box sits in the footer, after the status, clear of the right-hand text",
+          400 < x0 < 700 and x1 < 1920 - 2.5 * u - 100 and 950 < y0 < y1 < 1080, spec["box"])
+    left = {c for _, c in img.crop((0, y0, x0, y1)).getcolors(maxcolors=1 << 16)}
+    check("'Status:', the mark, the status and the hyphen stay outside it, still",
+          board.ORANGE in left and board.ORANGE not in {c for _, c in spec["strip"].getcolors(maxcolors=1 << 16)})
     strip = spec["strip"]
     check("the strip is the box's height and one pass is longer than the box",
           strip.height == y1 - y0 and strip.width > x1 - x0, (strip.size, spec["box"]))
