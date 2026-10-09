@@ -4,7 +4,18 @@
 set -e
 cd "$(dirname "$0")"
 
-apt-get update
+# Wait for apt's lock rather than fail on it: Debian's own apt-daily timer can be
+# running when the nightly updater calls this, and a failed install is rolled back
+# and its commit marked bad.
+APT="apt-get -o DPkg::Lock::Timeout=300"
+# DPkg::Lock::Timeout waits for dpkg's lock (install) but not for the lists lock
+# that "apt-get update" takes, which apt-daily holds while it runs: try again.
+for try in 1 2 3 4 5 6 7 8 9 10; do
+  $APT update && break
+  [ "$try" = 10 ] && { echo "apt-get update kept failing" >&2; exit 1; }
+  echo "apt-get update failed (try $try of 10), trying again in 30 s" >&2
+  sleep 30
+done
 # comitup takes over NetworkManager, and on a headless box that can drop the
 # WiFi you are connected over. Install the board first, add the hotspot second,
 # with a screen attached:  SKIP_COMITUP=1 bash install.sh
@@ -14,16 +25,26 @@ apt-get update
 # hotspot's name in words and nothing else is lost.
 PKGS="python3-pil python3-requests python3-numpy python3-qrcode fonts-dejavu-core ddcutil"
 [ -n "$SKIP_COMITUP" ] || PKGS="$PKGS comitup"
-apt-get install -y $PKGS
+$APT install -y $PKGS
 
 # A later run only needs a reboot if it changes the boot settings.
 NEED_REBOOT=no
 [ -f /etc/systemd/system/tubeboard.service ] || NEED_REBOOT=yes
 
 install -d /opt/tubeboard
-cp board.py portal.py screen.py rail.py netdiag.py /opt/tubeboard/
+cp board.py portal.py screen.py rail.py netdiag.py updater.py /opt/tubeboard/
 [ -f /opt/tubeboard/settings.json ] || cp settings.json /opt/tubeboard/
-cp tubeboard.service tubeboard-portal.service /etc/systemd/system/
+# The commit this came from. The board puts it in its health file, and the updater
+# checks the board it restarted runs the commit it installed. safe.directory: this
+# runs as root and the clone is someone else's, which git otherwise refuses.
+REPO=$(cd .. && pwd)
+git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD > /opt/tubeboard/VERSION 2>/dev/null \
+  || echo unknown > /opt/tubeboard/VERSION
+# The nightly updater follows the clone this was run from.
+install -d /var/lib/tubeboard
+echo "$REPO" > /var/lib/tubeboard/clone
+cp tubeboard.service tubeboard-portal.service tubeboard-update.service tubeboard-update.timer \
+   /etc/systemd/system/
 
 # Force 1080p over HDMI even if the screen is off at boot, never blank the
 # console, hide the text cursor. (KMS reads these from the kernel command line.)
@@ -122,6 +143,10 @@ systemctl enable tubeboard.service tubeboard-portal.service
 # restart, not "enable --now": on a second run the units are already running the old
 # code, and nothing here would replace it.
 systemctl restart tubeboard.service tubeboard-portal.service
+# The nightly update (updater.py). "auto_update": false in settings.json stops it;
+# the timer itself stays on, so a run of this never undoes that choice. Starting
+# the timer does not start an update.
+systemctl enable --now tubeboard-update.timer
 echo
 echo "Installed. Settings page: http://$(hostname).local:8080  (or http://$(hostname -I | awk '{print $1}'):8080)"
 if [ "$NEED_REBOOT" = yes ]; then

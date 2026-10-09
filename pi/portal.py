@@ -18,6 +18,7 @@ this page is not reachable from yours (Raspberry Pi Connect gives that shell):
     sudo python3 portal.py --add-rail DYP --line great-northern
     sudo python3 portal.py --drop-station 2
     sudo python3 portal.py --rotate 30
+    sudo python3 portal.py --auto-update off # stop the nightly update; "on" starts it again
     sudo python3 portal.py --forget-wifi     # before the board goes to someone else
     sudo python3 portal.py --handover-check  # what is left before that; it only reads
 
@@ -71,6 +72,12 @@ LIMIT = 25  # search results shown; the loop and the "showing the first N" notic
 ROTATE_DEFAULT = 30
 # The National Rail operators, for the boards TfL's feed does not carry.
 RAIL_LINES = rail.LINES if rail else {}
+
+
+def updates_on(s):
+    """settings.json's auto_update, read as updater.py reads it: on unless it says off."""
+    v = s.get("auto_update", True)
+    return not (v is False or v == 0 or str(v).strip().lower() in ("false", "no", "off", "0"))
 
 
 def line_name(line):
@@ -401,6 +408,13 @@ def home(msg=""):
              f'<label>Trains per column</label><input type="text" name="rows" value="{esc(s.get("rows",4))}">'
              f'<label>Refresh every (seconds, 20 or more)</label><input type="text" name="refresh_seconds" value="{esc(s.get("refresh_seconds",30))}">'
              '<button type="submit">Save</button></form>')
+    upd = "checked" if updates_on(s) else ""
+    body += ('<h2>Updates</h2><form method="post" action="/save-updates">'
+             f'<label><input type="checkbox" name="auto_update" value="1" {upd}> '
+             'Install new versions overnight</label>'
+             '<button type="submit">Save</button></form>'
+             '<small>Around 4 am the board installs a new version if there is one, and puts the '
+             'old one back by itself if the new one does not work. Untick to keep this one.</small>')
     return body
 
 
@@ -663,6 +677,8 @@ class H(BaseHTTPRequestHandler):
                 s["rotate_seconds"] = max(5, min(300, int(g("rotate_seconds", str(ROTATE_DEFAULT)))))
             except ValueError:
                 return self._send('<div class="err">Seconds must be a number.</div>' + home())
+        elif self.path == "/save-updates":
+            s["auto_update"] = g("auto_update") == "1"
         elif self.path == "/save-misc":
             try:
                 s["rows"] = max(1, min(8, int(g("rows", "4"))))
@@ -1166,6 +1182,15 @@ def cli_rotate(secs):
     print(f'Each board now holds the screen for {s["rotate_seconds"]} s.')
 
 
+def cli_auto_update(on):
+    s = load()
+    s["auto_update"] = on
+    save(s)
+    print("Nightly updates are on: a new version on main is installed around 4 am, and taken "
+          "back out if the board stops working." if on else
+          "Nightly updates are off. sudo python3 updater.py --now still updates by hand.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Tube board settings page, and the same "
                                              "settings from a shell.")
@@ -1186,6 +1211,8 @@ def main():
                     help="forget every saved WiFi network, so the setup hotspot comes up")
     ap.add_argument("--handover-check", action="store_true",
                     help="say what is left before the board goes to the recipient; only reads")
+    ap.add_argument("--auto-update", choices=("on", "off"),
+                    help="install new versions of the board overnight, or not")
     a = ap.parse_args()
 
     # Every one of these edits settings.json and exits. The board picks the change up
@@ -1225,6 +1252,9 @@ def main():
             did = True
         if a.forget_wifi:
             cli_forget_wifi()
+            did = True
+        if a.auto_update is not None:
+            cli_auto_update(a.auto_update == "on")
             did = True
         if a.list_stations and not did:
             cli_list()

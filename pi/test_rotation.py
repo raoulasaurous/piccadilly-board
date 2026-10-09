@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline tests for the station rotation, in board.py and in portal.py.
+"""Offline tests for the station rotation, in board.py and in portal.py, and for
+the nightly updater (updater.py) against a model of the Pi.
 
     cd pi && python3 test_rotation.py
 
@@ -16,12 +17,15 @@ writable).
 import atexit
 import contextlib
 import datetime as dt
+import fcntl
 import http.client
 import io
 import json
 import os
 import re
+import pwd
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -41,9 +45,13 @@ import board                                                        # noqa: E402
 import netdiag                                                      # noqa: E402
 import portal                                                       # noqa: E402
 import rail                                                         # noqa: E402
+import updater                                                      # noqa: E402
 
 board.SETTINGS_PATH = os.path.join(TMP, "board-settings.json")
 portal.SETTINGS_PATH = os.path.join(TMP, "portal-settings.json")
+# never the Pi's own: run as root there, the loop tests would write the live health file
+board.HEALTH_PATH = os.path.join(TMP, "health.json")
+board.VERSION_PATH = os.path.join(TMP, "VERSION")
 
 FAILS = []
 
@@ -867,6 +875,76 @@ def test_cli_flags():
           "board 3 of 3" in out.getvalue() and "only 3 board(s)" in err.getvalue(),
           (out.getvalue(), err.getvalue()))
     check("and wrote the file", os.path.exists(png) and os.path.getsize(png) > 1000)
+
+
+def read_health():
+    """The health file, or {} when the board wrote none (a FAIL below, not a crash)."""
+    try:
+        with open(board.HEALTH_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def health_run(frames, **kw):
+    """run_loop with no health file before it, quietly; the frames and the file after."""
+    if os.path.exists(board.HEALTH_PATH):
+        os.unlink(board.HEALTH_PATH)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            shown = run_loop(THREE, frames=frames, **kw)
+    except Exception as e:                      # noqa: BLE001
+        # the health file must never stop the board: an escape is a FAIL, not a crash
+        print(f"  (the loop raised: {e!r})")
+        shown = []
+    return shown, read_health()
+
+
+def test_health():
+    print("\nthe board's health file, which the updater reads")
+    with open(board.VERSION_PATH, "w") as f:
+        f.write("c0ffee" * 6 + "abcd\n")
+    shown, h = health_run(30)
+    check("the loop writes it, naming this process and the commit in VERSION",
+          h.get("pid") == os.getpid() and h.get("version") == "c0ffee" * 6 + "abcd", h)
+    # the 30th frame is the test's own stop, not a draw
+    check("every frame drawn is counted, and none failed",
+          h.get("draws") == len(shown) - 1 == 29 and h.get("failed_draws") == 0, h)
+    check("with wall times: when it started, its last frame, its last good fetch",
+          h.get("started") == 1000.0 and (h.get("last_draw") or 0) > 1000.0
+          and h.get("last_fetch_ok") is not None and h["last_fetch_ok"] <= h["last_draw"], h)
+    check("written whole and renamed into place: no scratch file left",
+          not os.path.exists(board.HEALTH_PATH + ".tmp"))
+    check("it holds every field the updater reads",
+          {"pid", "version", "draws", "failed_draws", "last_draw", "last_fetch_ok"} <= set(h), sorted(h))
+
+    def boom(n):
+        if n == 5:
+            raise RuntimeError("a frame that fails")
+    shown, h = health_run(20, on_frame=boom)
+    check("a failed draw is counted as one, and the loop carries on",
+          len(shown) == 20 and h.get("failed_draws") == 1 and h.get("draws") == 18, h)
+
+    outage["lines"] = {"piccadilly", "victoria", "mildmay"}
+    try:
+        shown, h = health_run(10)
+    finally:
+        outage["lines"] = set()
+    check("no good fetch, no fetch time: the updater can tell a board that is not live",
+          h.get("draws") == 9 and "last_fetch_ok" in h and h["last_fetch_ok"] is None, h)
+
+    os.unlink(board.VERSION_PATH)
+    shown, h = health_run(5)
+    check("no VERSION file (a clone, a Mac): the version is null, not a crash",
+          len(shown) == 5 and "version" in h and h["version"] is None, h)
+
+    saved = board.HEALTH_PATH
+    board.HEALTH_PATH = os.path.join(TMP, "no-such-dir", "health.json")
+    try:
+        shown, _ = health_run(20)
+    finally:
+        board.HEALTH_PATH = saved
+    check("where it cannot be written, the board draws on without it", len(shown) == 20, len(shown))
 
 
 # ------------------------------------------------------------------ portal.py
@@ -1919,6 +1997,485 @@ def test_ticker():
         board.time = saved
 
 
+# ------------------------------------------------------------------ updater.py
+
+OLD, NEW = "a" * 40, "b" * 40
+
+
+class FakePi:
+    """The Pi as the updater sees it, in a temp dir: the clone (git), install.sh,
+    systemctl, the settings page, the board's health file and the clock, all
+    scripted, and nothing real run. The board is a small model: restarted, it reads
+    VERSION from the fake /opt, then works, hangs, fails its draws, crashes, or
+    draws with no good fetch, as `behaviour` says for that commit."""
+    n = 0
+
+    def __init__(self, **settings):
+        FakePi.n += 1
+        root = os.path.join(TMP, f"pi{FakePi.n}")
+        self.opt = os.path.join(root, "opt", "tubeboard")
+        self.backup = self.opt + ".bak-update"
+        self.state = os.path.join(root, "var", "lib", "tubeboard")
+        self.units = os.path.join(root, "etc", "systemd", "system")
+        self.clone = os.path.join(root, "home", "piccadilly-board")
+        self.health = os.path.join(root, "run", "tubeboard", "health.json")
+        for d in (self.opt, self.state, self.units, os.path.join(self.clone, ".git"),
+                  os.path.dirname(self.health)):
+            os.makedirs(d)
+        self.put(self.opt, "VERSION", OLD + "\n")
+        self.put(self.opt, "board.py", "# the board at " + OLD)
+        self.put(self.opt, "settings.json", json.dumps(dict(board.DEFAULTS, **settings)))
+        self.put(self.opt + ".bak-2026-10-09", "board.py", "# a dated backup, a person's")
+        self.put(self.units, "tubeboard.service", "# unit at " + OLD)
+        self.head, self.origin, self.branch = OLD, NEW, "main"
+        self.dirty, self.ahead = "", False
+        self.fetch_rc = self.install_rc = 0
+        self.during_install = None     # what else happens while install.sh runs
+        # commit -> "hung", "failing", "crashing", "offline", "late-failing" (fine until the
+        # settings card goes, then every draw fails), "one-board" (only the first board
+        # of the rotation ever fetches) or "late-crash" (exits at 90 s, systemd restarts it)
+        self.behaviour = {}
+        self.boards = len(settings.get("stations") or []) or 1
+        self.portal_down = set()       # commits whose settings page does not answer
+        self.updater_broken = False
+        self.calls, self.lines = [], []
+        self.clock = [1_800_000_000.0]
+        self.pid = 4000
+        self.restart_board()
+        self.tick(30)                  # the old board has drawn and fetched
+
+    @staticmethod
+    def put(d, name, text):
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name), "w") as f:
+            f.write(text)
+
+    @staticmethod
+    def get(d, name):
+        try:
+            with open(os.path.join(d, name)) as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def version(self):
+        return (self.get(self.opt, "VERSION") or "").strip() or None
+
+    def restart_board(self):
+        self.pid += 1
+        self.board = {"pid": self.pid, "started": self.clock[0], "version": self.version(),
+                      "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None,
+                      "boards": self.boards, "boards_ok": 0}
+        self.write_health()
+
+    def write_health(self):
+        with open(self.health, "w") as f:
+            json.dump(self.board, f)
+
+    def tick(self, s):
+        self.clock[0] += s
+        how = self.behaviour.get(self.board["version"])
+        age = self.clock[0] - self.board["started"]
+        if how == "late-failing" and age > 60:
+            how = "failing"
+        if how == "late-crash" and age > 90:
+            how = "crashing"
+        if how == "crashing":
+            self.restart_board()       # dies after its first frame; systemd starts another
+            self.board["draws"] = 1
+        elif how == "failing":
+            self.board["failed_draws"] += 1
+        elif how != "hung":
+            self.board["draws"] += 1
+            self.board["last_draw"] = self.clock[0]
+            if how != "offline":
+                self.board["last_fetch_ok"] = self.clock[0]
+                # boards come up one per 30 s turn of the rotation and fetch as they do
+                up = 1 if how == "one-board" else min(self.boards, 1 + int(age // 30))
+                self.board["boards_ok"] = max(self.board["boards_ok"], up)
+        self.write_health()
+
+    def run(self, cmd, user=None, timeout=None):
+        self.calls.append((list(cmd), user, timeout))
+        if cmd[0] == "git":
+            a = cmd[3:]
+            if a[0] == "fetch":
+                return self.fetch_rc, "" if not self.fetch_rc else "fatal: unable to access the remote"
+            if a[0] == "rev-parse":
+                return 0, (self.origin if a[-1].startswith("origin/") else self.head) + "\n"
+            if a[0] == "symbolic-ref":
+                return (0, self.branch + "\n") if self.branch else (1, "")
+            if a[0] == "status":
+                return 0, self.dirty
+            if a[0] == "merge-base":
+                return (1 if self.ahead else 0), ""
+            if a[0] == "log":
+                return 0, f"{a[-1].split('..')[1][:7]} board: something new\n"
+            if a[0] == "merge":
+                if self.ahead:
+                    return 128, "fatal: Not possible to fast-forward, aborting."
+                self.head = a[-1]
+                return 0, "Fast-forward\n"
+            if a[0] == "reset":
+                self.head = a[-1]
+                return 0, f"HEAD is now at {a[-1][:7]}\n"
+        if cmd[-1].endswith("/install.sh"):
+            if self.during_install:
+                self.during_install()
+            if self.install_rc:
+                return self.install_rc, "E: Unable to locate package python3-something"
+            self.put(self.opt, "board.py", "# the board at " + self.head)
+            self.put(self.opt, "VERSION", self.head + "\n")
+            self.put(self.units, "tubeboard.service", "# unit at " + self.head)
+            self.restart_board()
+            return 0, "Installed. Settings page: http://tubeboard.local:8080"
+        if cmd[-1] == "--help":
+            broken = self.updater_broken and self.version() == NEW
+            return (1, "SyntaxError: invalid syntax") if broken else (0, "usage: updater.py")
+        if cmd[:2] == ["systemctl", "restart"]:
+            self.restart_board()
+            return 0, ""
+        if cmd[:2] == ["systemctl", "daemon-reload"]:
+            return 0, ""
+        return 127, "not in the model: " + " ".join(cmd)
+
+    def http_get(self, url, timeout=15):
+        return None if self.board["version"] in self.portal_down else 200
+
+    def go(self, mode="timer", clone=True):
+        self.lines.clear()
+        u = updater.Updater(clone=self.clone if clone else None, run=self.run,
+                            now=lambda: self.clock[0], sleep=self.tick, http_get=self.http_get,
+                            log=self.lines.append, opt=self.opt, backup=self.backup,
+                            state=self.state, health=self.health, units=self.units,
+                            python="python3")
+        return u.main(mode)
+
+    def ran(self, word):
+        """Whether the updater ran a command with this word, or a path ending in it."""
+        return any(t == word or t.endswith("/" + word) for c, _, _ in self.calls for t in c)
+
+    def log(self):
+        return "\n".join(self.lines)
+
+    def bad(self):
+        return self.get(self.state, "bad-commits") or ""
+
+    def history(self):
+        return self.get(self.state, "update-history") or ""
+
+
+def snapshot(d):
+    out = {}
+    for root, _, files in os.walk(d):
+        for name in files:
+            with open(os.path.join(root, name), "rb") as f:
+                out[os.path.relpath(os.path.join(root, name), d)] = f.read()
+    return out
+
+
+def test_updater():
+    print("\nthe nightly update")
+    me = pwd.getpwuid(os.getuid()).pw_name
+
+    pi = FakePi()
+    pi.origin = OLD
+    rc = pi.go()
+    check("nothing new: exit 0, nothing merged, installed or backed up",
+          rc == 0 and not pi.ran("merge") and not pi.ran("install.sh")
+          and not os.path.exists(pi.backup), pi.log())
+    check("and the history on the card says it ran", "nothing new: aaaaaaa is installed" in pi.history())
+
+    pi = FakePi(auto_update=False)
+    rc = pi.go()
+    check("auto_update false: the nightly run does nothing, not even a fetch",
+          rc == 0 and not pi.calls and pi.version() == OLD, pi.calls[:2])
+    rc = pi.go("now")
+    check("but --now, typed by a person, goes ahead", rc == 0 and pi.version() == NEW, pi.log()[-300:])
+    check("a hand-written \"off\" is off too", FakePi(auto_update="off").go() == 0)
+    pi = FakePi()
+    s = json.loads(pi.get(pi.opt, "settings.json"))
+    del s["auto_update"]
+    pi.put(pi.opt, "settings.json", json.dumps(s))
+    check("an older settings.json with no auto_update key is on", pi.go() == 0 and pi.version() == NEW)
+    check("auto_update is true by default in the board and in the shipped settings.json",
+          board.DEFAULTS["auto_update"] is True
+          and json.load(open(os.path.join(HERE, "settings.json")))["auto_update"] is True)
+
+    pi = FakePi()
+    pi.dirty = " M pi/board.py\n?? notes.txt\n"
+    rc = pi.go()
+    check("local changes in the clone: stopped, and the clone and the board left alone",
+          rc == 1 and not pi.ran("merge") and not pi.ran("reset") and not pi.ran("install.sh")
+          and pi.head == OLD and pi.version() == OLD and not os.path.exists(pi.backup), pi.log()[-300:])
+    check("and the log names what was changed", "pi/board.py" in pi.log() and "notes.txt" in pi.log())
+    pi = FakePi()
+    pi.branch = "experiment"
+    check("a clone on another branch is left alone",
+          pi.go() == 1 and not pi.ran("merge") and "experiment" in pi.log())
+    pi = FakePi()
+    pi.ahead = True
+    check("a clone with commits of its own is left alone",
+          pi.go() == 1 and not pi.ran("merge") and not pi.ran("install.sh"))
+    pi = FakePi()
+    pi.fetch_rc = 128
+    check("a fetch that fails stops the run", pi.go() == 1 and not pi.ran("install.sh")
+          and "fetch failed" in pi.log())
+
+    pi = FakePi()
+    pi.put(pi.state, "bad-commits", f"{NEW} 2026-10-09 04:10:00 the board failed 3 draw(s)\n")
+    rc = pi.go()
+    check("a commit recorded as bad is not tried again, and the log says how to retry it",
+          rc == 1 and not pi.ran("install.sh") and pi.version() == OLD
+          and "failed here before" in pi.log() and "bad-commits" in pi.log(), pi.log()[-300:])
+
+    # a good commit, all the way
+    pi = FakePi()
+    t0 = pi.clock[0]
+    rc = pi.go()
+    check("a good commit: exit 0, installed, and the board runs it",
+          rc == 0 and pi.version() == NEW and pi.board["version"] == NEW and pi.head == NEW,
+          pi.log()[-400:])
+    merges = [(c, u) for c, u, _ in pi.calls if "merge" in c]
+    check("merged as the clone's owner, fast-forward only, the very commit it checked",
+          merges == [(["git", "-C", pi.clone, "merge", "--ff-only", NEW], me)], merges)
+    check("every git command runs as the clone's owner",
+          all(u == me for c, u, _ in pi.calls if c[0] == "git"))
+    inst = [(c, u, t) for c, u, t in pi.calls if c[-1].endswith("/install.sh")]
+    check("install.sh as root, with SKIP_COMITUP=1 and a time limit",
+          len(inst) == 1 and inst[0][0][:3] == ["env", "SKIP_COMITUP=1", "bash"]
+          and inst[0][1] is None and inst[0][2] == updater.INSTALL_SECONDS, inst)
+    check("the backup holds the old code, the old settings and the old units",
+          pi.get(pi.backup, "VERSION").strip() == OLD and pi.get(pi.backup, "board.py") == "# the board at " + OLD
+          and pi.get(os.path.join(pi.backup, ".systemd"), "tubeboard.service") == "# unit at " + OLD
+          and pi.get(pi.backup, "settings.json") == pi.get(pi.opt, "settings.json"))
+    check("and the dated backup is left alone",
+          pi.get(pi.opt + ".bak-2026-10-09", "board.py") == "# a dated backup, a person's")
+    check("it watched the new board past the settings card's minute before trusting it, no longer",
+          updater.OBSERVE_MIN <= pi.clock[0] - t0 <= updater.OBSERVE_MIN + 30, pi.clock[0] - t0)
+    check("it checked the new updater starts", pi.ran("--help"))
+    check("nothing recorded as bad, nothing left half done",
+          pi.bad() == "" and not os.path.exists(os.path.join(pi.state, "updating.json")))
+    check("every step is in the log, and the history says what was installed",
+          all(w in pi.log() for w in ("auto_update is on", "new on main", "board before", "backup:",
+                                      "merged", "install:", "health: good"))
+          and "UPDATED: installed bbbbbbb (was aaaaaaa)" in pi.history(), pi.log())
+    rc = pi.go()
+    check("and the next night there is nothing new", rc == 0 and "nothing new: bbbbbbb" in pi.log())
+    pi.origin = "c" * 40
+    pi.go()
+    check("a second update replaces the update backup, not adds one",
+          pi.get(pi.backup, "VERSION").strip() == NEW
+          and sorted(x for x in os.listdir(os.path.dirname(pi.opt)) if x.startswith("tubeboard"))
+          == ["tubeboard", "tubeboard.bak-2026-10-09", "tubeboard.bak-update"],
+          os.listdir(os.path.dirname(pi.opt)))
+
+    # install.sh fails: everything goes back, and a setting saved meanwhile stays
+    pi = FakePi()
+
+    def meanwhile():
+        s = json.loads(pi.get(pi.opt, "settings.json"))
+        s["brightness"] = 55                      # someone on the settings page
+        pi.put(pi.opt, "settings.json", json.dumps(s))
+        pi.put(pi.opt, "board.py", "# half of " + NEW)   # install.sh got as far as the copy
+        pi.put(pi.units, "tubeboard.service", "# unit at " + NEW)
+    pi.during_install, pi.install_rc = meanwhile, 100
+    rc = pi.go()
+    check("install.sh fails: rolled back, exit 3, said loudly",
+          rc == 3 and "ROLLING BACK" in pi.log() and "ROLLED BACK bbbbbbb" in pi.log(), pi.log()[-400:])
+    check("the old code is back in /opt, and the old unit in systemd's directory",
+          pi.version() == OLD and pi.get(pi.opt, "board.py") == "# the board at " + OLD
+          and pi.get(pi.units, "tubeboard.service") == "# unit at " + OLD)
+    check("with the settings.json saved during the update, not the backup's",
+          json.loads(pi.get(pi.opt, "settings.json"))["brightness"] == 55)
+    check("both services restarted, and the board runs the old code again",
+          any(c == ["systemctl", "restart", "tubeboard.service", "tubeboard-portal.service"]
+              for c, _, _ in pi.calls) and pi.board["version"] == OLD
+          and "the old code is drawing again" in pi.log())
+    check("the clone is reset to the commit before, as its owner",
+          pi.head == OLD and any(c[3:] == ["reset", "--hard", OLD] and u == me for c, u, _ in pi.calls))
+    check("an install that fails may be the night (apt, the network): not bad yet, tried again",
+          pi.bad() == "" and "tried again tomorrow night (try 1 of 3)" in pi.log()
+          and "ROLLED BACK bbbbbbb" in pi.history(), pi.log()[-300:])
+    check("no scratch directories left in /opt",
+          sorted(x for x in os.listdir(os.path.dirname(pi.opt)))
+          == ["tubeboard", "tubeboard.bak-2026-10-09", "tubeboard.bak-update"])
+    pi.during_install = None
+    pi.go()
+    rc = pi.go()
+    check("the third night it fails, the commit is recorded as bad, with why",
+          rc == 3 and pi.bad().startswith(NEW + " ") and "install.sh failed" in pi.bad(), pi.log()[-300:])
+    installs = lambda: len([1 for c, _, _ in pi.calls if c[-1].endswith("/install.sh")])   # noqa: E731
+    n = installs()
+    rc = pi.go()
+    check("and the next night that commit is skipped", rc == 1 and installs() == n, (rc, installs(), n))
+    pi.origin, pi.install_rc, pi.during_install = "c" * 40, 0, None
+    check("and a newer one on main is tried as usual", pi.go() == 0 and pi.version() == "c" * 40)
+
+    # the new board installs but does not work
+    for how, words in (("hung", "not drawing"), ("failing", "failed 1 draw"),
+                       ("crashing", "restarted"),
+                       # the review's cases: fine while the settings card shows, then not
+                       ("late-failing", "failed 1 draw"), ("late-crash", "restarted")):
+        pi = FakePi()
+        pi.behaviour[NEW] = how
+        rc = pi.go()
+        check(f"a new board that is {how}: rolled back, and the commit recorded as bad",
+              rc == 3 and pi.version() == OLD and pi.board["version"] == OLD and pi.head == OLD
+              and pi.bad().startswith(NEW) and words in pi.bad(), (rc, pi.bad(), pi.log()[-300:]))
+    for how, words, extra in (("offline", "no good fetch", {}),
+                              ("one-board", "only 1 of the 3", {"stations": THREE["stations"]})):
+        pi = FakePi(**extra)
+        pi.behaviour[NEW] = how
+        rc = pi.go()
+        first = (rc == 3 and pi.version() == OLD and pi.bad() == "" and words in pi.log())
+        pi.go()
+        pi.go()
+        check(f"a new board that is {how}: rolled back, tried again two more nights, then bad",
+              first and pi.bad().startswith(NEW) and words in pi.bad(), (rc, pi.bad(), pi.log()[-300:]))
+    pi = FakePi(stations=THREE["stations"])
+    t0 = pi.clock[0]
+    pi.go()
+    check("three boards at 30 s: watched for the card's minute, one turn of the rotation and a margin",
+          "watching it for 180 s" in pi.log() and pi.version() == NEW, pi.log()[-300:])
+    pi = FakePi()
+    pi.behaviour[NEW] = "failing"
+    t0 = pi.clock[0]
+    pi.go()
+    # 20 s of it is watching the old code come back
+    check("a failed draw is enough at once: no three-minute wait", pi.clock[0] - t0 < 60, pi.clock[0] - t0)
+    pi = FakePi()
+    pi.behaviour[OLD] = pi.behaviour[NEW] = "offline"
+    pi.restart_board()
+    pi.tick(30)
+    check("a board that was not live before is not asked to be live after",
+          pi.go() == 0 and pi.version() == NEW, pi.log()[-300:])
+    pi = FakePi()
+    pi.portal_down.add(NEW)
+    check("a settings page that stops answering is rolled back",
+          pi.go() == 3 and "settings page" in pi.bad() and pi.version() == OLD)
+    pi = FakePi()
+    pi.portal_down.update({OLD, NEW})
+    check("one that did not answer before is not held against the new code", pi.go() == 0)
+    pi = FakePi()
+    pi.updater_broken = True
+    check("a new updater.py that does not start is rolled back: the next update depends on it",
+          pi.go() == 3 and "updater.py does not start" in pi.bad() and pi.version() == OLD)
+
+    # --dry-run
+    pi = FakePi()
+    opt_before, state_before = snapshot(pi.opt), snapshot(pi.state)
+    rc = pi.go("dry-run")
+    changing = [c for c, _, _ in pi.calls if c[0] != "git" or c[3] in ("merge", "reset")]
+    check("--dry-run: exit 0, and no merge, reset, install or restart", rc == 0 and not changing, changing)
+    check("and nothing on disk changed: no backup, no lock, no history, no bad commit",
+          snapshot(pi.opt) == opt_before and snapshot(pi.state) == state_before == {}
+          and not os.path.exists(pi.backup))
+    check("it says what a real run would do", "a real run would now back up" in pi.log()
+          and "bbbbbbb board: something new" in pi.log(), pi.log())
+
+    # a run that died part-way, after install.sh had copied half of the new code
+    pi = FakePi(auto_update=False)
+    shutil.copytree(pi.opt, pi.backup)
+    pi.put(os.path.join(pi.backup, ".systemd"), "tubeboard.service", "# unit at " + OLD)
+    pi.put(pi.opt, "board.py", "# half of " + NEW)
+    pi.head = NEW
+    pi.put(pi.state, "updating.json", json.dumps({"head": OLD, "installed": OLD, "new": NEW,
+                                                  "started": "2026-10-10 04:12:00"}))
+    rc = pi.go()
+    check("the next run puts it right first, even with auto_update off",
+          rc == 0 and pi.get(pi.opt, "board.py") == "# the board at " + OLD and pi.head == OLD
+          and pi.board["version"] == OLD and not os.path.exists(os.path.join(pi.state, "updating.json"))
+          and "DID NOT FINISH" in pi.log(), pi.log()[-400:])
+    check("without marking the commit bad: a power cut is not its fault", pi.bad() == "")
+    pi = FakePi(auto_update=False)
+    shutil.copytree(pi.opt, pi.backup)
+    pi.put(pi.opt, "VERSION", "c" * 40 + "\n")      # a person deployed by hand since
+    pi.put(pi.opt, "board.py", "# the board at " + "c" * 40)
+    pi.put(pi.state, "updating.json", json.dumps({"head": OLD, "installed": OLD, "new": NEW}))
+    pi.go()
+    check("but what a person installed since is left as it is",
+          pi.get(pi.opt, "board.py") == "# the board at " + "c" * 40
+          and not os.path.exists(os.path.join(pi.state, "updating.json")) and "left as it is" in pi.log())
+    pi = FakePi()
+    pi.put(pi.state, "updating.json", json.dumps({"head": OLD, "installed": OLD, "new": NEW}))
+    shutil.rmtree(pi.backup, ignore_errors=True)
+    check("with no backup to put back, it stops for a person rather than back up the half install",
+          pi.go() == 1 and not pi.ran("install.sh") and "person" in pi.log())
+
+    pi = FakePi()
+    with open(os.path.join(pi.state, "lock"), "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        rc = pi.go("now")
+    check("a run while another is going stops at once", rc == 1 and not pi.calls
+          and "another update" in pi.log())
+
+    pi = FakePi()
+    pi.origin = OLD
+    pi.put(pi.state, "clone", pi.clone + "\n")
+    check("the clone is the one install.sh was last run from",
+          pi.go(clone=False) == 0 and pi.clone in pi.log())
+    pi = FakePi()
+    check("no clone known: stopped, saying how to fix it",
+          pi.go(clone=False) == 1 and "install.sh" in pi.log())
+
+    check("as root, git runs as the owner, with the owner's HOME and no password prompt",
+          updater.as_user(["git", "fetch"], "pi", euid=0, home="/home/pi")
+          == ["runuser", "-u", "pi", "--", "env", "HOME=/home/pi", "GIT_TERMINAL_PROMPT=0", "git", "fetch"])
+    check("not as root (a dry run by the owner), as it is",
+          updater.as_user(["git", "fetch"], "pi", euid=1000) == ["git", "fetch"])
+    rc, out = updater.run_command([sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"],
+                                  timeout=1)
+    check("a command past its time limit is stopped, and says so", rc == 124 and "started" in out
+          and "stopped after 1 s" in out, (rc, out))
+    out = subprocess.run([sys.executable, os.path.join(HERE, "updater.py")], capture_output=True, text=True)
+    check("run with no flag it only prints how to use it", out.returncode == 2 and "--now" in out.stderr)
+
+    def text(name):
+        with open(os.path.join(HERE, name)) as f:
+            return f.read()
+    tmr = text("tubeboard-update.timer")
+    check("the timer: 04:00 local, up to half an hour later, catching up after a power cut",
+          "OnCalendar=*-*-* 04:00:00" in tmr and "RandomizedDelaySec=30min" in tmr and "Persistent=true" in tmr)
+    svc = text("tubeboard-update.service")
+    check("the service runs the nightly mode as root, with time for an install, two checks and a fetch",
+          "ExecStart=/usr/bin/python3 /opt/tubeboard/updater.py --timer" in svc and "Type=oneshot" in svc
+          and "TimeoutStartSec=40min" in svc
+          and updater.INSTALL_SECONDS + 2 * updater.HEALTH_SECONDS + 180 + 300 < 40 * 60)
+    check("the board's unit makes /run/tubeboard for the health file",
+          "RuntimeDirectory=tubeboard" in text("tubeboard.service")
+          and os.path.dirname(updater.HEALTH) == "/run/tubeboard" and board.HEALTH_PATH != updater.HEALTH)
+    inst = text("install.sh")
+    check("install.sh copies the updater, writes VERSION, and installs and starts the timer",
+          "updater.py /opt/tubeboard/" in inst and "rev-parse HEAD > /opt/tubeboard/VERSION" in inst
+          and "tubeboard-update.service tubeboard-update.timer" in inst
+          and "systemctl enable --now tubeboard-update.timer" in inst)
+    check("and still parses", subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0)
+
+    # the switch, on the settings page and from a shell
+    write_portal(dict(BASE))
+    check("the page offers the switch, ticked when the file does not say",
+          'name="auto_update" value="1" checked' in portal.home())
+    main_with("--auto-update", "off")
+    check("--auto-update off saves false, and the page shows it unticked",
+          portal.load().get("auto_update") is False and 'name="auto_update" value="1" >' in portal.home())
+    main_with("--auto-update", "on")
+    check("--auto-update on saves true", portal.load().get("auto_update") is True)
+    srv = portal.ThreadingHTTPServer(("127.0.0.1", 0), portal.H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        c.request("POST", "/save-updates", "", {"Content-Type": "application/x-www-form-urlencoded"})
+        r = c.getresponse(); r.read(); c.close()
+        check("unticking it on the page saves false", r.status == 303 and portal.load()["auto_update"] is False)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        c.request("POST", "/save-updates", "auto_update=1", {"Content-Type": "application/x-www-form-urlencoded"})
+        r = c.getresponse(); r.read(); c.close()
+        check("and ticking it saves true", r.status == 303 and portal.load()["auto_update"] is True)
+    finally:
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     test_views()
     test_rail_board()
@@ -1928,6 +2485,7 @@ if __name__ == "__main__":
     test_outage()
     test_wifi()
     test_cli_flags()
+    test_health()
     test_shell()
     test_page()
     test_forget_wifi()
@@ -1937,6 +2495,7 @@ if __name__ == "__main__":
     test_handover_flag()
     test_handover_doc()
     test_both_ends()
+    test_updater()
     print()
     if FAILS:
         print(f"{len(FAILS)} FAILED: " + ", ".join(FAILS))

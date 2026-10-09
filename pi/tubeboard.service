@@ -7,6 +7,10 @@ After=network.target
 [Service]
 # so every print lands in the journal, not in a buffer nobody reads
 Environment=PYTHONUNBUFFERED=1
+# /run/tubeboard/health.json: the board's account of itself, which the updater
+# reads. tmpfs, so a write every frame costs the SD card nothing; emptied when
+# the board stops, so a reader never mistakes a dead board's file for a live one
+RuntimeDirectory=tubeboard
 ExecStart=/usr/bin/python3 /opt/tubeboard/board.py
 WorkingDirectory=/opt/tubeboard
 Restart=always

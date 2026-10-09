@@ -14,11 +14,12 @@ stations come from National Rail's own feed with a free key.
 | `rail.py` | National Rail departures, turned into the shape TfL sends so the rest of the board never notices |
 | `netdiag.py` | Why there are no trains, in words: no WiFi, needs sign-in, no internet, or the feed is down |
 | `screen.py` | Brightness and power over the HDMI cable (DDC/CI) |
+| `updater.py` | The nightly update: installs `main` if it moved, checks the board still works, puts the old code back if not |
 | `settings.json` | Stations, lines, rows, refresh, rotation, the rail key. The portal writes it, the board reloads it |
-| `install.sh` | One-shot install on Raspberry Pi OS Lite, and the way to deploy a change |
+| `install.sh` | One-shot install on Raspberry Pi OS Lite. Also what the updater runs to install a change |
 | `bench.sh` | The power test: logs the Pi's under-voltage flag once a minute |
-| `test_rotation.py` | 159 offline checks. Every feed and every command is stubbed, so it runs anywhere |
-| `*.service` | systemd units so both programs start at boot and restart if they die |
+| `test_rotation.py` | 284 offline checks. Every feed and every command is stubbed, so it runs anywhere |
+| `*.service`, `*.timer` | systemd units: both programs start at boot and restart if they die, and the update runs each night |
 
 ## Set up the card (on a Mac or PC)
 
@@ -44,8 +45,25 @@ a box with a countdown.
 
 ## Deploy a change
 
-The board runs from `/opt/tubeboard/`, not from the clone, and there is no
-self-update. Merging is not deploying. On the Pi:
+**A change merged to `main` is on the board the next night.** Around 4 am
+`tubeboard-update.timer` runs `updater.py`. If `main` has moved, it backs up
+`/opt/tubeboard`, pulls `main` into the clone (fast-forward only, never over a
+local change), runs `install.sh` with `SKIP_COMITUP=1`, and watches the board
+until the settings card has gone and every board has come round once (2 to 6
+minutes). If the board crashes, fails a draw, stops drawing, or stops fetching when
+it fetched before, it puts the old code back and restarts both services. A crash or
+a failed draw means that commit is never tried again; an install or a fetch that
+fails may be the night, so it is tried again the next night, three times at most.
+
+```bash
+sudo python3 /opt/tubeboard/updater.py --now      # update now, by hand
+python3 /opt/tubeboard/updater.py --dry-run       # what it would do; changes nothing
+journalctl -u tubeboard-update                    # what it did, since the last boot
+cat /var/lib/tubeboard/update-history             # one line per night, kept across reboots
+sudo python3 /opt/tubeboard/portal.py --auto-update off   # stop it (or untick it on the settings page)
+```
+
+By hand, as before (the first install of the updater comes this way):
 
 ```bash
 sudo cp -a /opt/tubeboard "/opt/tubeboard.bak-$(date +%F)"   # the way back
@@ -53,8 +71,9 @@ cd ~/piccadilly-board && git pull
 cd pi && sudo SKIP_COMITUP=1 bash install.sh
 ```
 
-The installer copies the programs, keeps `settings.json`, and restarts both
-services. `SKIP_COMITUP=1` leaves the WiFi hotspot alone. To roll back:
+The installer copies the programs, keeps `settings.json`, restarts both
+services and turns on the nightly timer. `SKIP_COMITUP=1` leaves the WiFi
+hotspot alone. To roll back by hand:
 
 ```bash
 sudo cp /opt/tubeboard.bak-<date>/*.py /opt/tubeboard/ && sudo systemctl restart tubeboard tubeboard-portal
@@ -117,6 +136,7 @@ sudo python3 portal.py --add-rail DYP --line great-northern
 sudo python3 portal.py --drop-station 2
 sudo python3 portal.py --rotate 30
 sudo python3 portal.py --handover-check      # what is left before the hand-over; it only reads
+sudo python3 portal.py --auto-update off      # no nightly updates; "on" turns them back on
 ```
 
 Run it in `/opt/tubeboard`, not in the git clone: the live settings are there.
@@ -213,8 +233,9 @@ there draws board 1 and says so; the rotation lives in `/opt/tubeboard`.
 ```bash
 python3 test_rotation.py
 ```
-159 checks with every feed and command stubbed, so it runs with no network at
-all. Run it before deploying a change to how the boards are picked or drawn.
+284 checks with every feed and command stubbed, so it runs with no network at
+all. The updater's are run against a model of the Pi: git, install.sh, systemctl
+and the board are all stand-ins. Run it before deploying a change to how the boards are picked or drawn.
 
 ## A direction is missing from the screen
 

@@ -26,5 +26,6 @@
   "day_from": "07:00",
   "dim_from": "21:00",
   "off_from": "00:00",
-  "off_until": "06:00"
+  "off_until": "06:00",
+  "auto_update": true
 }
