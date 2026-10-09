@@ -1179,6 +1179,17 @@ def test_ticker():
                  "Severe Delays", True, why, at, at, True, ticker=other_board)
     check("another board with the same status is another key, so it starts over",
           other_board["key"] != spec["key"])
+    # a reason about the line's length: the same decision whatever the update age says
+    edge_case = None
+    for n in range(40, 260, 2):
+        probe_why = ("i" * n)                   # a narrow letter: steps finer than the change
+        t1, t2 = {}, {}
+        board.render(1920, 1080, v, cols, "Minor Delays", True, probe_why, at, at, True, ticker=t1)
+        board.render(1920, 1080, v, cols, "Minor Delays", True, probe_why, at + dt.timedelta(seconds=300), at,
+                     True, ticker=t2)
+        if ("strip" in t1) != ("strip" in t2):
+            edge_case = n
+    check("scrolling or not does not change with 'just now' and '5m ago'", edge_case is None, edge_case)
     gone = {}
     board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, None, False, ticker=gone)
     check("no live data: nothing to scroll", "strip" not in gone)
@@ -1286,14 +1297,19 @@ def test_ticker():
             t.set(board.Ticker.prepare(dict(spec)))
         check("the same status redrawn keeps its place, prepared outside the lock", t.off == t.step
               and np.array_equal(t.window(), board.pack565(strip)[:, t.step: t.step + x1 - x0]))
-        n = 0
-        while t.off != 0 and n < 10000:
+        n, wrapped = 0, False
+        while n < 10000:
+            before = t.off
             t.tick()
             n += 1
-        check("one pass comes round to the start and rests there",
-              t.off == 0 and np.array_equal(fb.read(spec["box"]), start) and not t.tick(), n)
-        clock[0] += board.Ticker.PAUSE + 0.01
-        t.tick()
+            if t.off < before:
+                wrapped = True
+                break
+        period = t.spec[2]
+        check("a pass comes round to the start and carries straight on, no rest",
+              wrapped and t.off == (before + t.step) % period and t.tick() and t.tick(), (n, t.off))
+        check("seamless: the window at the wrap is the strip from its start again",
+              np.array_equal(t.window(), board.pack565(strip)[:, t.off: t.off + x1 - x0]))
         other = dict(spec, key=("Minor Delays", "something else"))
         with t.lock:
             t.set(other)

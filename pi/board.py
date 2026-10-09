@@ -853,8 +853,12 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
     else:
         upd = "Updated " + ago(updated, now)
         d.text((W - pad, uy), upd, font=fupd, fill=DIM, anchor="rm")
-        # Everything on the left of this line has to stop before the timestamp.
-        right_edge = W - pad - text_w(d, upd, fupd) - 2.0 * u
+        # Everything on the left of this line has to stop before the timestamp. It
+        # stops before the widest the timestamp gets, not this frame's: measured each
+        # time, "just now" and "10s ago" moved the edge every redraw, and a reason
+        # about the line's length flipped between scrolling and standing still.
+        widest = max(text_w(d, x, fupd) for x in (upd, "Updated just now", "Updated 59s ago", "Updated 59m ago"))
+        right_edge = W - pad - widest - 2.0 * u
     x = pad
     d.text((x, fy), "Status:", font=fs, fill=DIM, anchor="lm")
     x += text_w(d, "Status:", fs) + 0.8 * u
@@ -1160,8 +1164,9 @@ class Ticker:
     Only the status box is redrawn, 30 times a second, from a strip made once per
     status: a slice and a few row writes, a few per cent of one core on a Pi 3.
     The 305 ms full frame could never move this smoothly, and does not try. The
-    line rests for PAUSE seconds with its start in place, slides left one pass,
-    and comes round to rest again. A new status, or another board, starts over.
+    line rests for PAUSE seconds with its start in place, then slides left and
+    comes round again and again without stopping, a gap of a few words between
+    passes. A new status, or another board, starts over with the rest.
 
     Everything touching the screen happens under `lock`; the main loop holds it
     from set() to the end of the frame's write, so a redraw and a slide never
@@ -1246,17 +1251,25 @@ class Ticker:
                 wrote = True
         if not self.spec or time.monotonic() < self.rest_until:
             return wrote
-        self.off += self.step
-        if self.off >= self.spec[2]:
-            # round to the start, which is where it rests
-            self.off = 0
-            self.rest_until = time.monotonic() + self.PAUSE
+        # Round and round without stopping (Raoul, 9 Oct 2026: a stop after each pass
+        # looked like a stall). It rests only when a board or a status first shows.
+        self.off = (self.off + self.step) % self.spec[2]
         self.fb.write_box(self.spec[0], self.window())
         return True
 
     def run(self):
+        # On a schedule, not a fixed sleep after each step: sleep(1/FPS) plus the
+        # step's own time ran slow and uneven. Behind (a redraw held the lock), it
+        # carries on from now rather than racing to catch up.
+        period = 1.0 / self.FPS
+        nxt = time.monotonic()
         while True:
-            time.sleep(1.0 / self.FPS)
+            nxt += period
+            delay = nxt - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                nxt = time.monotonic()
             with self.lock:
                 try:
                     self.tick()
