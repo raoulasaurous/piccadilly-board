@@ -436,7 +436,7 @@ def fake_diagnose(hotspot, source="tfl"):
     return v, network["state"], network["ssid"]
 
 
-def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
+def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True, address=None):
     """Run board.main() against a settings file, with a fake clock that sleep()
     advances, a fake screen, a spy in place of render and a scripted network.
     Returns the frames drawn as (station, line, rotation, live, updated, now)."""
@@ -475,7 +475,7 @@ def run_loop(extra, frames=400, on_frame=None, argv=None, spy=True):
              board.dt, sys.argv, netdiag.diagnose, netdiag.address, netdiag.hotspot_name)
     board.Framebuffer, board.screen = FakeFB, None
     netdiag.diagnose = fake_diagnose
-    netdiag.address = lambda: ("tubeboard", "192.168.1.23")
+    netdiag.address = address or (lambda: ("tubeboard", "192.168.1.23"))
     netdiag.hotspot_name = lambda *a, **k: "TubeBoard-setup"
     if spy:
         board.render = spy_render           # --png needs the real one: it saves the frame
@@ -664,8 +664,20 @@ def test_wifi():
           any(a == ("tubeboard", "192.168.1.23") for _, a in diags), diags[:3])
     diags.clear()
     with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
-        run_loop(THREE, frames=120)
-    check("and not after three minutes", any(a is None for _, a in diags[-10:]))
+        shown = run_loop(THREE, frames=120)
+    times = [(s[5] - shown[0][5]).total_seconds() for s in shown]
+    carded = [t for t, (_, a) in zip(times, diags) if a]
+    check("for one minute", carded and max(carded) < 60 and any(a is None for _, a in diags[-10:]),
+          (carded[:1], carded[-1:]))
+    # the minute starts when the board has an IP, not at boot: a slow WiFi join keeps it
+    diags.clear()
+    late = lambda: ("tubeboard", "192.168.1.23" if fake_clock[0] >= 1300 else "")
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        shown = run_loop(THREE, frames=200, address=late)
+    times = [(s[5] - shown[0][5]).total_seconds() for s in shown]
+    carded = [t for t, (_, a) in zip(times, diags) if a]
+    check("an IP that arrives late still gets its minute",
+          carded and 300 <= carded[0] < 312 and 45 <= carded[-1] - carded[0] < 60, (carded[:1], carded[-1:]))
 
     # the frames themselves draw
     at = dt.datetime(2026, 10, 6, 19, 30)

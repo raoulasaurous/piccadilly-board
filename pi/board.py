@@ -1095,6 +1095,11 @@ def pack565(img):
     return ((a[:, :, 0] >> 3) << 11) | ((a[:, :, 1] >> 2) << 5) | (a[:, :, 2] >> 3)
 
 
+# How long the footer shows the settings address once the board has one (Raoul, 9 Oct
+# 2026: one minute; it was three, and squeezed the status line for all of them).
+ADDRESS_SECONDS = 60
+
+
 class Ticker:
     """Slides a status line that is too long for its space, the way the dot-matrix
     boards on a platform do. TfL's reasons run to 200 characters and the line
@@ -1261,7 +1266,10 @@ def main():
     # What the network is doing, asked only after a fetch has failed for a reason the
     # fetch could not name itself, and at most every 30 s.
     net = {"state": "", "ssid": "", "diag": None, "checked": 0.0, "said": None}
-    addr = {"value": None, "checked": 0.0}
+    # The settings address shows for ADDRESS_SECONDS from the moment the board first
+    # has an IP, not from boot: a slow WiFi join, or the WiFi hand-over in someone
+    # else's house, still gets its full minute on the screen.
+    addr = {"value": None, "checked": 0.0, "since": None}
 
     def network_check(v):
         if netdiag is None or time.monotonic() - net["checked"] < 30:
@@ -1322,15 +1330,18 @@ def main():
                                      password=password)
                 spec = None
             else:
-                if netdiag and up < 180 and time.monotonic() - addr["checked"] >= 20:
+                if netdiag and addr["since"] is None and time.monotonic() - addr["checked"] >= 5:
                     addr["checked"] = time.monotonic()
-                    addr["value"] = netdiag.address()  # the IP can arrive a while after boot
+                    host_ip = netdiag.address()    # the IP can arrive a while after boot
+                    if host_ip[1]:
+                        addr["value"], addr["since"] = host_ip, time.monotonic()
+                card = addr["since"] is not None and time.monotonic() - addr["since"] < ADDRESS_SECONDS
                 # this board's own refusal first, the network's verdict otherwise
                 diag = None if b["live"] else (b["diag"] or net["diag"])
                 frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
                                b["status_why"], now, b["updated"], b["live"],
                                rotation=rotation, diag=diag,
-                               address=addr["value"] if up < 180 else None, ticker=spec)
+                               address=addr["value"] if card else None, ticker=spec)
             if ticker:
                 with ticker.lock:
                     ticker.set(spec)
