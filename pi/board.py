@@ -695,6 +695,15 @@ def clip(d, text, fnt, room):
     return (text.rstrip(".") + "...") if text else ""
 
 
+def towards_text(d, towards, fnt, room):
+    """The "towards ..." beside a column heading, cut to the column. On the Pi,
+    "NORTHBOUND towards Walthamstow Central" ran off the right edge of the screen
+    (9 Oct 2026): DejaVu is wider than the Mac's Helvetica, so the Mac's preview
+    had fitted. "towards..." alone names nothing, so then there is no text at all."""
+    shown = clip(d, f"towards {towards}", fnt, room)
+    return "" if shown in ("", "towards...") else shown
+
+
 def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
     """The Underground roundel: a red ring with a coloured bar across it.
     Against the ring's outer diameter D: bar width 1.05 D, bar height 0.22 D,
@@ -873,8 +882,11 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         fh = font("bold", 2.6 * u)
         d.text((x0, top), c["label"], font=fh, fill=WHITE)
         if c["towards"]:
-            d.text((x0 + text_w(d, c["label"], fh) + 1.0 * u, top + 0.35 * u),
-                   f"towards {c['towards']}", font=font("light", 1.7 * u), fill=DIM)
+            ft = font("light", 1.7 * u)
+            tx = x0 + text_w(d, c["label"], fh) + 1.0 * u
+            shown = towards_text(d, c["towards"], ft, (x0 + col_w) - tx)
+            if shown:
+                d.text((tx, top + 0.35 * u), shown, font=ft, fill=DIM)
         rows = c["rows"]
         if not rows:
             msg = "No trains reported" if updated else ""
