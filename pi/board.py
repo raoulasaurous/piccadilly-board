@@ -1361,10 +1361,20 @@ class Health:
             # a raise here would be a restart loop
             version = None
         self.data = {"pid": os.getpid(), "started": time.time(), "version": version,
-                     "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None}
+                     "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None,
+                     "boards": 0, "boards_ok": 0}
+        self.ok = set()
 
-    def fetched(self):
+    def fetched(self, key=None):
+        """A good fetch, for the board with this key. The updater wants every board
+        on the rotation to have fetched once with new code, not just the first."""
         self.data["last_fetch_ok"] = time.time()
+        if key is not None:
+            self.ok.add(key)
+            self.data["boards_ok"] = len(self.ok)
+
+    def boards(self, n):
+        self.data["boards"] = n
 
     def drew(self, ok):
         if ok:
@@ -1598,6 +1608,7 @@ def main():
             idx = (idx + 1) % len(views)
             last_rotate = t
         v = views[idx]
+        health.boards(len(views))
         b = cached(v)
         rotation = (idx, len(views), tuple(LINE_COLOURS.get(x["line"], DIM) for x in views))
         # Draw first, fetch second. Switching boards then never waits on the network:
@@ -1612,7 +1623,7 @@ def main():
             try:
                 b["cols"], b["status"], b["status_ok"], b["status_why"] = fetch(v)
                 b["updated"], b["live"], b["diag"] = dt.datetime.now(), True, None
-                health.fetched()
+                health.fetched(view_key(v))
                 if b["failures"]:
                     print(f'fetch ok again ({v["station_name"]}, {v["line"]})', flush=True)
                 b["failures"], b["said"] = 0, None

@@ -8,7 +8,14 @@ cd "$(dirname "$0")"
 # running when the nightly updater calls this, and a failed install is rolled back
 # and its commit marked bad.
 APT="apt-get -o DPkg::Lock::Timeout=300"
-$APT update
+# DPkg::Lock::Timeout waits for dpkg's lock (install) but not for the lists lock
+# that "apt-get update" takes, which apt-daily holds while it runs: try again.
+for try in 1 2 3 4 5 6 7 8 9 10; do
+  $APT update && break
+  [ "$try" = 10 ] && { echo "apt-get update kept failing" >&2; exit 1; }
+  echo "apt-get update failed (try $try of 10), trying again in 30 s" >&2
+  sleep 30
+done
 # comitup takes over NetworkManager, and on a headless box that can drop the
 # WiFi you are connected over. Install the board first, add the hotspot second,
 # with a screen attached:  SKIP_COMITUP=1 bash install.sh

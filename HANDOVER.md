@@ -92,10 +92,16 @@ What one run does, in order:
 5. `git merge --ff-only` to that exact commit, as the clone's owner.
 6. `SKIP_COMITUP=1 bash install.sh` as root, with a 15-minute limit. A full run
    restarts comitup, which can drop the WiFi.
-7. The health check, for up to 3 minutes. The new `updater.py` must start. The
-   board must be a new process that runs the new commit, must draw for 20 s with
-   no failed draw, and must be live again if it was live before. The settings
-   page must answer if it answered before.
+7. The health check. The new `updater.py` must start. The board must be a new
+   process on the new commit within 2 minutes. Then it is watched until the
+   settings card's minute has passed and the rotation has gone round once
+   (`ADDRESS_SECONDS` + `rotate_seconds` x boards + 30 s, kept between 2 and 6
+   minutes): the same process throughout (a crash restarts it), no failed draw,
+   at least a draw every 20 s on average, and if it was live before, live again
+   with every board it showed having fetched. The settings page must answer if it
+   answered before. A first version watched only 20 s, which is the settings
+   card on board 1, and the 9 Oct review showed it passing code that broke every
+   frame after the card.
 8. If the install or the check fails, it rolls back (below).
 
 The board writes `/run/tubeboard/health.json` on every frame: pid, start time,
@@ -108,13 +114,18 @@ draws, last draw, last good fetch. It is on tmpfs, so the SD card sees none of i
 that is there now, and puts the old units back. It restarts both services, resets
 the clone to the commit before, and logs whether the old code draws again. The
 run ends with `ROLLED BACK` and the reason in the log, and exit code 3. A bad
-commit is never tried again; the next commit merged to `main` is. A run that a
+commit is never tried again; the next commit merged to `main` is. A failure that
+may be the night rather than the code (install.sh, which needs apt and the
+network; a board that draws but cannot fetch) is rolled back the same way, counted
+in `/var/lib/tubeboard/tries`, and tried again the next night; the third such night
+marks it bad. `install.sh` itself tries `apt-get update` ten times, 30 s apart:
+apt-daily can hold apt's lists lock at 04:00, and `DPkg::Lock::Timeout` does not
+wait for that lock. A run that a
 power cut stops part-way is put right at the start of the next run, and that
 commit is not marked bad.
 
-An install that fails for a reason that is not the commit's (apt, the network)
-also marks the commit bad. To try it again, delete its line in `bad-commits` and
-run the updater by hand. A commit that changes the kernel command line needs a
+To retry a commit marked bad, delete its line in `bad-commits` (and in `tries`)
+and run the updater by hand. A commit that changes the kernel command line needs a
 reboot: `install.sh` says so in the log, and the updater does not reboot.
 
 **Stop it:** untick **Install new versions overnight** on the settings page, or

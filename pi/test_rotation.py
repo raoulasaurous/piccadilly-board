@@ -1527,7 +1527,11 @@ class FakePi:
         self.dirty, self.ahead = "", False
         self.fetch_rc = self.install_rc = 0
         self.during_install = None     # what else happens while install.sh runs
-        self.behaviour = {}            # commit -> "hung", "failing", "crashing" or "offline"
+        # commit -> "hung", "failing", "crashing", "offline", "late-failing" (fine until the
+        # settings card goes, then every draw fails), "one-board" (only the first board
+        # of the rotation ever fetches) or "late-crash" (exits at 90 s, systemd restarts it)
+        self.behaviour = {}
+        self.boards = len(settings.get("stations") or []) or 1
         self.portal_down = set()       # commits whose settings page does not answer
         self.updater_broken = False
         self.calls, self.lines = [], []
@@ -1556,7 +1560,8 @@ class FakePi:
     def restart_board(self):
         self.pid += 1
         self.board = {"pid": self.pid, "started": self.clock[0], "version": self.version(),
-                      "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None}
+                      "draws": 0, "failed_draws": 0, "last_draw": None, "last_fetch_ok": None,
+                      "boards": self.boards, "boards_ok": 0}
         self.write_health()
 
     def write_health(self):
@@ -1566,6 +1571,11 @@ class FakePi:
     def tick(self, s):
         self.clock[0] += s
         how = self.behaviour.get(self.board["version"])
+        age = self.clock[0] - self.board["started"]
+        if how == "late-failing" and age > 60:
+            how = "failing"
+        if how == "late-crash" and age > 90:
+            how = "crashing"
         if how == "crashing":
             self.restart_board()       # dies after its first frame; systemd starts another
             self.board["draws"] = 1
@@ -1576,6 +1586,9 @@ class FakePi:
             self.board["last_draw"] = self.clock[0]
             if how != "offline":
                 self.board["last_fetch_ok"] = self.clock[0]
+                # boards come up one per 30 s turn of the rotation and fetch as they do
+                up = 1 if how == "one-board" else min(self.boards, 1 + int(age // 30))
+                self.board["boards_ok"] = max(self.board["boards_ok"], up)
         self.write_health()
 
     def run(self, cmd, user=None, timeout=None):
@@ -1734,8 +1747,8 @@ def test_updater():
           and pi.get(pi.backup, "settings.json") == pi.get(pi.opt, "settings.json"))
     check("and the dated backup is left alone",
           pi.get(pi.opt + ".bak-2026-10-09", "board.py") == "# a dated backup, a person's")
-    check("it watched the new board draw for 20 s before trusting it, and no longer than needed",
-          20 <= pi.clock[0] - t0 <= 60, pi.clock[0] - t0)
+    check("it watched the new board past the settings card's minute before trusting it, no longer",
+          updater.OBSERVE_MIN <= pi.clock[0] - t0 <= updater.OBSERVE_MIN + 30, pi.clock[0] - t0)
     check("it checked the new updater starts", pi.ran("--help"))
     check("nothing recorded as bad, nothing left half done",
           pi.bad() == "" and not os.path.exists(os.path.join(pi.state, "updating.json")))
@@ -1777,27 +1790,50 @@ def test_updater():
           and "the old code is drawing again" in pi.log())
     check("the clone is reset to the commit before, as its owner",
           pi.head == OLD and any(c[3:] == ["reset", "--hard", OLD] and u == me for c, u, _ in pi.calls))
-    check("the commit is recorded as bad, with why, and the history says so",
-          pi.bad().startswith(NEW + " ") and "install.sh failed" in pi.bad()
-          and "ROLLED BACK bbbbbbb" in pi.history())
+    check("an install that fails may be the night (apt, the network): not bad yet, tried again",
+          pi.bad() == "" and "tried again tomorrow night (try 1 of 3)" in pi.log()
+          and "ROLLED BACK bbbbbbb" in pi.history(), pi.log()[-300:])
     check("no scratch directories left in /opt",
           sorted(x for x in os.listdir(os.path.dirname(pi.opt)))
           == ["tubeboard", "tubeboard.bak-2026-10-09", "tubeboard.bak-update"])
+    pi.during_install = None
+    pi.go()
     rc = pi.go()
-    check("the next night that commit is skipped", rc == 1 and len([1 for c, _, _ in pi.calls
-                                                                     if c[-1].endswith("/install.sh")]) == 1)
+    check("the third night it fails, the commit is recorded as bad, with why",
+          rc == 3 and pi.bad().startswith(NEW + " ") and "install.sh failed" in pi.bad(), pi.log()[-300:])
+    installs = lambda: len([1 for c, _, _ in pi.calls if c[-1].endswith("/install.sh")])   # noqa: E731
+    n = installs()
+    rc = pi.go()
+    check("and the next night that commit is skipped", rc == 1 and installs() == n, (rc, installs(), n))
     pi.origin, pi.install_rc, pi.during_install = "c" * 40, 0, None
     check("and a newer one on main is tried as usual", pi.go() == 0 and pi.version() == "c" * 40)
 
     # the new board installs but does not work
     for how, words in (("hung", "not drawing"), ("failing", "failed 1 draw"),
-                       ("crashing", "restarted"), ("offline", "no good fetch")):
+                       ("crashing", "restarted"),
+                       # the review's cases: fine while the settings card shows, then not
+                       ("late-failing", "failed 1 draw"), ("late-crash", "restarted")):
         pi = FakePi()
         pi.behaviour[NEW] = how
         rc = pi.go()
         check(f"a new board that is {how}: rolled back, and the commit recorded as bad",
               rc == 3 and pi.version() == OLD and pi.board["version"] == OLD and pi.head == OLD
               and pi.bad().startswith(NEW) and words in pi.bad(), (rc, pi.bad(), pi.log()[-300:]))
+    for how, words, extra in (("offline", "no good fetch", {}),
+                              ("one-board", "only 1 of the 3", {"stations": THREE["stations"]})):
+        pi = FakePi(**extra)
+        pi.behaviour[NEW] = how
+        rc = pi.go()
+        first = (rc == 3 and pi.version() == OLD and pi.bad() == "" and words in pi.log())
+        pi.go()
+        pi.go()
+        check(f"a new board that is {how}: rolled back, tried again two more nights, then bad",
+              first and pi.bad().startswith(NEW) and words in pi.bad(), (rc, pi.bad(), pi.log()[-300:]))
+    pi = FakePi(stations=THREE["stations"])
+    t0 = pi.clock[0]
+    pi.go()
+    check("three boards at 30 s: watched for the card's minute, one turn of the rotation and a margin",
+          "watching it for 180 s" in pi.log() and pi.version() == NEW, pi.log()[-300:])
     pi = FakePi()
     pi.behaviour[NEW] = "failing"
     t0 = pi.clock[0]

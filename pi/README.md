@@ -48,10 +48,12 @@ a box with a countdown.
 **A change merged to `main` is on the board the next night.** Around 4 am
 `tubeboard-update.timer` runs `updater.py`. If `main` has moved, it backs up
 `/opt/tubeboard`, pulls `main` into the clone (fast-forward only, never over a
-local change), runs `install.sh` with `SKIP_COMITUP=1`, and watches the board for
-up to three minutes. If the board does not come back drawing, and fetching when it
-fetched before, it puts the old code back, restarts both services and never tries
-that commit again.
+local change), runs `install.sh` with `SKIP_COMITUP=1`, and watches the board
+until the settings card has gone and every board has come round once (2 to 6
+minutes). If the board crashes, fails a draw, stops drawing, or stops fetching when
+it fetched before, it puts the old code back and restarts both services. A crash or
+a failed draw means that commit is never tried again; an install or a fetch that
+fails may be the night, so it is tried again the next night, three times at most.
 
 ```bash
 sudo python3 /opt/tubeboard/updater.py --now      # update now, by hand

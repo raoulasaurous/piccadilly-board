@@ -19,12 +19,17 @@ broken has a way back:
  5. git merge --ff-only, as the owner.
  6. install.sh as root with SKIP_COMITUP=1 (a full run restarts comitup, which can
     drop the WiFi), with a time limit.
- 7. Within three minutes the board must run the new code, be drawing with no
-    failed draws, and be live again if it was live before. The settings page must
-    answer if it did before, and the new updater must start.
+ 7. The new updater must start, and the board must come up on the new code within
+    two minutes. Then it is watched until the settings card's minute has passed
+    and the rotation has gone round once (2 to 6 minutes): no restart, no failed
+    draw, drawing steadily, live again if it was live before with every board it
+    showed fetched, and the settings page answering if it did before.
  8. If not: put the backup back (keeping the settings.json there now), restart
     both services, reset the clone to the commit before, and record the commit as
-    bad so it is never tried again. A newer commit on main is tried as usual.
+    bad so it is never tried again. A failure that may be the night rather than
+    the code (install.sh, which needs apt and the network; a board that draws but
+    cannot fetch) is rolled back the same way but tried again the next night, and
+    marked bad only on the third. A newer commit on main is tried as usual.
 
 Every step is logged to stdout (journalctl -u tubeboard-update), and one line per
 run goes to /var/lib/tubeboard/update-history, which survives a reboot where the
@@ -59,12 +64,23 @@ UNIT_FILES = SERVICES + ("tubeboard-update.service", "tubeboard-update.timer")
 UNITS_SAVED = ".systemd"              # inside the backup, never copied into /opt
 
 INSTALL_SECONDS = 15 * 60   # apt-get update and install on a Pi 3 A+, with room to spare
-HEALTH_SECONDS = 180
 LIVE_SECONDS = 300          # live: a good fetch this recently
-# The board redraws at least every 10 s, so one process drawing more over this long
-# is drawing, and one that crashes and restarts never stays this long.
-DRAWING_SECONDS = 20
+# How the new board is watched. First it has START_SECONDS to come up on the new
+# commit. Then it is watched for long enough that the settings card (board.py's
+# ADDRESS_SECONDS, the first minute) has gone, the footer has drawn as it does all
+# day, and the rotation has come round once, so every board has been drawn with the
+# new code and has fetched: at least OBSERVE_MIN, at most OBSERVE_MAX. Watching only
+# the first 20 s, as the first version did, saw board 1 with the card on it and
+# passed code that broke every frame after (review, 9 Oct 2026).
+ADDRESS_SECONDS = 60        # board.py's settings card; keep the two the same
+START_SECONDS = 120
+OBSERVE_MIN, OBSERVE_MAX = 120, 360
+HEALTH_SECONDS = START_SECONDS + OBSERVE_MAX
 POLL_SECONDS = 5
+# A failure that may be the night and not the code (install.sh, which needs apt and
+# the network; a board that draws but cannot fetch) is rolled back and tried again
+# the next night. Only after this many such nights is the commit marked bad.
+TRIES = 3
 HISTORY_LINES = 200
 
 DONE, STOPPED, ROLLED_BACK = 0, 1, 3
@@ -361,47 +377,82 @@ class Updater:
                 + ", last good fetch "
                 + (f"{t - ok:.0f} s ago" if isinstance(ok, (int, float)) else "never"))
 
-    def check(self, version, before_pid, need_live, need_portal):
-        """Wait up to HEALTH_SECONDS for the restarted board to show it works. None if
-        it did; otherwise why not, in words for the log."""
-        deadline = self.now() + HEALTH_SECONDS
-        first = None            # (pid, draws, when) the first time this process was seen
-        pids = set()
+    def watch_for(self, h, settings):
+        """How long to watch a new board, and how many of its boards must have fetched
+        by then: the settings card's minute, one turn of the rotation, and a margin."""
+        try:
+            rotate = max(5, min(300, int((settings or {}).get("rotate_seconds", 30))))
+        except (TypeError, ValueError, OverflowError):
+            rotate = 30
+        boards = h.get("boards") if isinstance(h.get("boards"), int) and h.get("boards") > 0 else 1
+        turn = rotate * boards if boards > 1 else 0
+        window = max(OBSERVE_MIN, min(OBSERVE_MAX, ADDRESS_SECONDS + turn + 30))
+        # a rotation longer than the window: only the boards shown in it can have fetched
+        shown = boards if boards == 1 else min(boards, 1 + int(window // rotate))
+        return window, shown
+
+    def check(self, version, before_pid, need_live, need_portal, settings=None, quick=False):
+        """Watch the restarted board until it has shown it works. Hands back (None,
+        False) if it did, otherwise (why, may_be_the_night): why in words for the log,
+        and whether the failure could be the network rather than the code."""
+        start_by = self.now() + START_SECONDS
+        first = None            # (pid, draws, when) when the new process was first seen
         why = "the board wrote no health file"
         while True:
             h = self.read_health()
             t = self.now()
-            if h is None:
-                why = "the board wrote no health file"
-            elif version and h.get("version") != version:
-                why = f"the board runs {short(h.get('version'))}, not {short(version)}"
-            elif before_pid and h.get("pid") == before_pid:
-                why = "the board was not restarted"
-            elif h.get("failed_draws"):
-                return f"the board failed {h['failed_draws']} draw(s) ({self.describe(h, t)})"
-            else:
-                pid, draws = h.get("pid"), h.get("draws") or 0
-                pids.add(pid)
-                if first is None or first[0] != pid:
-                    first = (pid, draws, t)
-                last = h.get("last_draw")
-                drawing = (t - first[2] >= DRAWING_SECONDS and draws > first[1]
-                           and isinstance(last, (int, float)) and t - last <= 30)
-                if not drawing:
-                    why = "the board is not drawing"
-                elif need_live and not self.live(h, t):
-                    why = "the board draws, but has had no good fetch, and it had one before"
-                elif need_portal and self.http_get(PORTAL) != 200:
-                    why = "the board draws, but the settings page does not answer, and it did before"
+            if first is None:
+                if h is None:
+                    why = "the board wrote no health file"
+                elif version and h.get("version") != version:
+                    why = f"the board runs {short(h.get('version'))}, not {short(version)}"
+                elif before_pid and h.get("pid") == before_pid:
+                    why = "the board was not restarted"
                 else:
-                    self.log(f"health: good. {self.describe(h, t)}"
-                             + (", settings page answers" if need_portal else ""))
-                    return None
-            if t >= deadline:
-                if len(pids) > 1:
-                    why = f"the board restarted {len(pids) - 1} time(s) and never settled"
-                return f"{why}, after {HEALTH_SECONDS} s ({self.describe(h, t)})"
-            self.sleep(POLL_SECONDS)
+                    first = (h.get("pid"), h.get("draws") or 0, t)
+                    window, shown = self.watch_for(h, settings)
+                    if quick:
+                        # after a rollback: only to say in the log whether the old code
+                        # came back, which it has run for months
+                        window, shown = 30, 1
+                    self.log(f"health: the new board is up (pid {h.get('pid')}); watching it for "
+                             f"{window} s, through the settings card and "
+                             + (f"{shown} board(s) of the rotation" if shown > 1 else "its board"))
+                if first is None:
+                    if t >= start_by:
+                        return f"{why}, after {START_SECONDS} s ({self.describe(h, t)})", False
+                    self.sleep(POLL_SECONDS)
+                    continue
+            # watching the new process
+            if h is None:
+                return "the health file went away while the board was watched", False
+            if h.get("pid") != first[0]:
+                return (f"the board restarted while it was watched (pid {first[0]} became "
+                        f"{h.get('pid')}): it crashed or gave up", False)
+            if h.get("failed_draws"):
+                return f"the board failed {h['failed_draws']} draw(s) ({self.describe(h, t)})", False
+            if t - first[2] < window:
+                self.sleep(POLL_SECONDS)
+                continue
+            # the whole window has passed: judge it
+            draws, last = (h.get("draws") or 0) - first[1], h.get("last_draw")
+            # it redraws at least every 10 s; half that rate is the floor
+            if draws < window / 20 or not isinstance(last, (int, float)) or t - last > 30:
+                return f"the board is not drawing ({self.describe(h, t)})", False
+            if need_live:
+                ok = h.get("boards_ok")
+                if not self.live(h, t):
+                    return ("the board draws, but has had no good fetch, and it had one before "
+                            f"({self.describe(h, t)})"), True
+                if isinstance(ok, int) and ok < shown:
+                    return (f"only {ok} of the {shown} board(s) shown fetched, and it was live "
+                            f"before ({self.describe(h, t)})"), True
+            if need_portal and self.http_get(PORTAL) != 200:
+                return "the board draws, but the settings page does not answer, and it did before", False
+            self.log(f"health: good after {window} s. {self.describe(h, t)}"
+                     + (f", {h.get('boards_ok')} of {h.get('boards')} boards fetched" if h.get("boards") else "")
+                     + (", settings page answers" if need_portal else ""))
+            return None, False
 
     # ------------------------------------------------------------ the run
 
@@ -524,7 +575,8 @@ class Updater:
             for line in tail:
                 self.log("  | " + line)
             if rc != 0:
-                return self.rollback(head, installed, target, f"install.sh failed (exit {rc})")
+                return self.rollback(head, installed, target, f"install.sh failed (exit {rc})",
+                                     maybe_the_night=True)
             self.log(f"install: done in {self.now() - started:.0f} s")
             # 7. the updater that will run tomorrow has to start, or there is no tomorrow
             rc, out = self.run([self.python, os.path.join(self.opt, "updater.py"), "--help"], timeout=60)
@@ -532,18 +584,40 @@ class Updater:
                 return self.rollback(head, installed, target,
                                      f"the new updater.py does not start (exit {rc}): {out.strip()[-200:]}")
             self.log(f"health: waiting up to {HEALTH_SECONDS} s for the board to run {short(target)}")
-            why = self.check(target, before.get("pid") if before else None, was_live, portal_was_up)
+            why, maybe = self.check(target, before.get("pid") if before else None, was_live, portal_was_up,
+                                    settings=settings)
             if why:
-                return self.rollback(head, installed, target, why)
+                return self.rollback(head, installed, target, why, maybe_the_night=maybe)
         except Exception as e:                  # noqa: BLE001
             return self.rollback(head, installed, target, f"the updater itself failed: {e!r}")
         self.clear_marker()
         return self.finish(DONE, f"UPDATED: installed {short(target)} (was {short(installed)})")
 
-    def rollback(self, head, installed, bad, why):
+    def tries(self, commit):
+        """How many nights this commit has been rolled back for a reason that may
+        have been the night, counting tonight."""
+        path = os.path.join(self.state, "tries")
+        n = 0
+        try:
+            with open(path) as f:
+                n = sum(1 for line in f if line.split()[:1] == [commit])
+        except OSError:
+            pass
+        try:
+            with open(path, "a") as f:
+                f.write(f"{commit} {self.stamp()}\n")
+        except OSError as e:
+            self.log(f"could not count this try in {path}: {e}")
+        return n + 1
+
+    def rollback(self, head, installed, bad, why, maybe_the_night=False):
         self.log(f"ROLLING BACK {short(bad)}: {why}")
         # first, so that whatever happens next this commit is not tried again tonight
-        self.record_bad(bad, why)
+        if maybe_the_night and (n := self.tries(bad)) < TRIES:
+            self.log(f"this may be the network or apt, not the code: {short(bad)} is tried again "
+                     f"tomorrow night (try {n} of {TRIES})")
+        else:
+            self.record_bad(bad, why)
         restored = True
         try:
             self.restore()
@@ -557,7 +631,8 @@ class Updater:
         if restored:
             self.clear_marker()
             # nothing more can be done from here, but the log should say how it ended
-            again = self.check(installed, before.get("pid") if before else None, False, False)
+            again, _ = self.check(installed, before.get("pid") if before else None, False, False,
+                                  settings=self.settings(), quick=True)
             self.log("the old code is drawing again" if again is None else
                      f"THE OLD CODE IS NOT DRAWING EITHER: {again}")
         return self.finish(ROLLED_BACK, f"ROLLED BACK {short(bad)}, back on {short(installed)}: {why}")
