@@ -19,6 +19,7 @@ this page is not reachable from yours (Raspberry Pi Connect gives that shell):
     sudo python3 portal.py --drop-station 2
     sudo python3 portal.py --rotate 30
     sudo python3 portal.py --forget-wifi     # before the board goes to someone else
+    sudo python3 portal.py --handover-check  # what is left before that; it only reads
 
 The sudo is because the installer and the service write settings.json as root;
 reading it needs nothing. A National Rail station (one TfL's feed does not carry,
@@ -26,10 +27,12 @@ such as Drayton Park) is added by its three-letter code and needs the key: a fre
 account at raildata.org.uk, subscribed to "Live Departure Board".
 """
 import argparse
+import collections
 import datetime as dt
 import html
 import json
 import os
+import pwd
 import re
 import subprocess
 import sys
@@ -200,18 +203,40 @@ def stop_name(m):
     return (m.get("name") or "").replace(" Underground Station", "")
 
 
+Ran = collections.namedtuple("Ran", "state out err")
+
+
+def run_command(args, timeout=10):
+    """The one door every outside command goes through, so a test can stand in for
+    it. It never raises. state is "ok" (exit 0), "failed" (any other exit),
+    "missing" (no such program; runuser and env exit 127 for that too) or
+    "timeout". Nothing is fed to the command's stdin, so one that asks a question
+    gets no answer and ends, instead of waiting for a person who is not there."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, errors="replace",
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return Ran("missing", "", "")
+    except subprocess.TimeoutExpired:
+        return Ran("timeout", "", "")
+    except OSError as e:
+        return Ran("failed", "", str(e))
+    if r.returncode == 127:
+        return Ran("missing", r.stdout or "", r.stderr or "")
+    return Ran("ok" if r.returncode == 0 else "failed", r.stdout or "", r.stderr or "")
+
+
 def _nm(args, timeout=15):
     """nmcli, or a RuntimeError with its own words. The portal runs as root, which
     is what deleting a connection needs."""
-    try:
-        r = subprocess.run(["nmcli"] + args, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError:
+    r = run_command(["nmcli"] + args, timeout)
+    if r.state == "missing":
         raise RuntimeError("nmcli is not installed")
-    except subprocess.TimeoutExpired:
+    if r.state == "timeout":
         raise RuntimeError("nmcli did not answer")
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout or "nmcli failed").strip())
-    return r.stdout
+    if r.state == "failed":
+        raise RuntimeError((r.err or r.out or "nmcli failed").strip())
+    return r.out
 
 
 def hotspot_name():
@@ -774,6 +799,353 @@ def cli_forget_wifi():
         print("  forgot " + name)
 
 
+# ------------------------------------------------- the hand-over check
+#
+# Read-only. It runs commands that look and never one that changes anything, and it
+# writes no file: the saved WiFi names go to the terminal and nowhere else. It never
+# reads a password: passwd -S prints a date, and the key file is read for its
+# comments only.
+
+# The console password was typed into a chat once, before this day. One last changed
+# before it is taken to be that one; one changed on or after it is a new one.
+PASSWORD_EXPOSED_ON = dt.date(2026, 10, 9)
+SETUP_HOTSPOT = "TubeBoard-setup"
+COMITUP_CONF = "/etc/comitup.conf"
+LIVE_DIR = "/opt/tubeboard"                     # the clone's settings.json is not the board's
+UPDATE_TIMER = "tubeboard-update.timer"         # a self-updater may add this; none is not a fault
+PHONE_STEP = "look at the setup screen and the hotspot on a phone once (this check cannot see that)"
+
+Item = collections.namedtuple("Item", "todo text step group")   # group: before, password, wifi or ""
+
+
+def _ok(text):
+    return Item(False, text, "", "")
+
+
+def _todo(text, step, group=""):
+    return Item(True, text, step, group)
+
+
+def _plain(s, limit=80):
+    """A name or a comment, safe to print on one line: a control character in it
+    must not reach the terminal as an escape sequence, and a line break or a
+    right-to-left mark must not move the text round."""
+    s = " ".join(str(s).split())
+    s = re.sub(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]", "?", s)
+    return s if len(s) <= limit else s[:limit - 3] + "..."
+
+
+def find_board_user():
+    """(name, uid, home) of the login the board belongs to, or None. Inside a git
+    clone it is the clone's owner; run from /opt/tubeboard with sudo it is the person
+    who ran sudo. Root is never the answer: the console password and the keys that
+    matter are the login's."""
+    def entry(get, key):
+        try:
+            p = get(key)
+        except KeyError:
+            return None
+        if p.pw_uid == 0 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*\$?", p.pw_name):
+            return None
+        return p.pw_name, p.pw_uid, p.pw_dir
+    clone = os.path.dirname(HERE)
+    if os.path.exists(os.path.join(clone, ".git")):        # a file, not a folder, in a worktree
+        try:
+            found = entry(pwd.getpwuid, os.stat(clone).st_uid)
+        except OSError:
+            found = None
+        if found:
+            return found
+    sudo_user = os.environ.get("SUDO_USER")
+    return entry(pwd.getpwnam, sudo_user) if sudo_user else None
+
+
+def check_wifi():
+    try:
+        nets = wifi_connections()
+    except Exception as e:                      # noqa: BLE001
+        # _nm's two short sentences are said as they are; nmcli's own words are not
+        # copied out, because this check has no need of anything but the names
+        why = str(e) if str(e) in ("nmcli is not installed", "nmcli did not answer") else "nmcli failed"
+        return _todo(f"WiFi: could not list the saved networks ({why}). Check by hand, "
+                     "and forget the WiFi last.",
+                     "check the saved WiFi by hand, and forget it last", "wifi")
+    if not nets:
+        return _ok("WiFi: no saved network that is not an access point.")
+    names = ", ".join(_plain(n) for _, n in nets)
+    return _todo(f"WiFi: {len(nets)} saved network{'' if len(nets) == 1 else 's'} ({names}). "
+                 "Forget the WiFi last, it cuts this connection.",
+                 "forget the WiFi last, it cuts this connection", "wifi")
+
+
+def _shadow_date(word):
+    """The day passwd -S prints. Debian 13 prints 2026-10-09; older shadow prints 10/09/2026."""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return dt.datetime.strptime(word, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def check_password(user):
+    name = user[0]
+    step = "reset the console password"
+    r = run_command(["passwd", "-S", name])
+    if r.state != "ok":
+        why = {"missing": "passwd is not installed", "timeout": "passwd did not answer"}.get(
+            r.state, "passwd -S failed; it needs sudo")
+        return _todo(f"Console password: could not read when {name}'s was changed ({why}). "
+                     "Reset it anyway.", step, "password")
+    words = r.out.split()        # login, P or L or NP, last change, then four numbers
+    status = words[1] if len(words) > 1 else ""
+    changed = _shadow_date(words[2]) if len(words) > 2 else None
+    if status == "NP":
+        return _todo(f"Console password: {name} has no password at all. Set one with passwd.",
+                     step, "password")
+    if changed is None:
+        return _todo(f"Console password: passwd -S gave no change date this check can read. "
+                     f"Check it by hand: sudo passwd -S {name}", step, "password")
+    locked = " The account is locked." if status == "L" else ""
+    if changed < PASSWORD_EXPOSED_ON:
+        return _todo(f"Console password: {name}'s was last changed on {changed}, before "
+                     f"{PASSWORD_EXPOSED_ON}. It was typed into a chat once. Reset it with passwd."
+                     + locked, step, "password")
+    return _ok(f"Console password: {name}'s was last changed on {changed}, on or after "
+               f"{PASSWORD_EXPOSED_ON}, so it is newer than the one typed into a chat." + locked)
+
+
+def _connect_signed_in(text):
+    """True, False, or None when the words are not ones this knows."""
+    t = text.lower()
+    m = re.search(r"signed[ _-]?in\s*[:=]\s*(yes|no|true|false)\b", t)
+    if m:
+        return m.group(1) in ("yes", "true")
+    if re.search(r"not signed in|signed out|not logged in", t):
+        return False
+    return True if re.search(r"\bsigned in\b", t) else None
+
+
+def check_connect(user):
+    name, uid, home = user
+    # Pi Connect is a user service. Under runuser the login has no session, so name
+    # the places its runtime folder and bus live (lingering keeps them there).
+    r = run_command(["runuser", "-u", name, "--", "env", f"HOME={home}",
+                     f"XDG_RUNTIME_DIR=/run/user/{uid}",
+                     f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+                     "rpi-connect", "status"])
+    if r.state == "missing":
+        return _todo("Raspberry Pi Connect: rpi-connect (or runuser) is not installed, so there is "
+                     "no remote shell and this check cannot tell.",
+                     "check Raspberry Pi Connect by hand")
+    if r.state == "timeout":
+        return _todo("Raspberry Pi Connect: rpi-connect status did not answer, so this check "
+                     "cannot tell.", "check Raspberry Pi Connect by hand")
+    signed = _connect_signed_in(r.out + "\n" + r.err)
+    if signed is True:
+        return _ok("Raspberry Pi Connect: signed in, so Raoul can log in remotely. "
+                   "The recipient must be told.")
+    if signed is False:
+        return _todo("Raspberry Pi Connect: not signed in, so Raoul cannot log in remotely. "
+                     "Sign in with rpi-connect signin, run under setsid nohup, if that is wanted.",
+                     "sign in to Raspberry Pi Connect, or decide to go without it")
+    return _todo(f"Raspberry Pi Connect: rpi-connect status gave no answer this check can read. "
+                 f"Run it by hand as {name}.", "check Raspberry Pi Connect by hand")
+
+
+def _words(line):
+    """The words of an authorized_keys line. A quote can hold spaces (an option's value)."""
+    words, cur, quoted = [], "", False
+    for ch in line.strip():
+        if ch == '"':
+            quoted = not quoted
+            cur += ch
+        elif ch.isspace() and not quoted:
+            if cur:
+                words.append(cur)
+                cur = ""
+        else:
+            cur += ch
+    if cur:
+        words.append(cur)
+    return words
+
+
+def key_comment(line):
+    """The comment on one authorized_keys line, and nothing else of it. The comment is
+    what follows the key type and the key itself; options come before those."""
+    words = _words(line)
+    for i, w in enumerate(words):
+        if re.fullmatch(r"(ssh|ecdsa|sk)-[a-z0-9@.-]+", w) and i + 1 < len(words):
+            return " ".join(words[i + 2:])
+    return None
+
+
+def check_ssh(user):
+    name, _, home = user
+    path = os.path.join(home, ".ssh", "authorized_keys")
+    step = "decide whether Raoul's SSH key stays"
+    try:
+        with open(path, errors="replace") as f:
+            lines = [x for x in f.read().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+    except FileNotFoundError:
+        return _ok(f"SSH: {name} has no authorized_keys file, so no key can log in.")
+    except OSError as e:
+        return _todo(f"SSH: could not read {path} ({_plain(e.strerror or e)}). Run this check with sudo.",
+                     step)
+    if not lines:
+        return _ok(f"SSH: no key is authorised for {name}.")
+    comments = []
+    for x in lines[:10]:
+        c = key_comment(x)
+        if c is not None:
+            # a malformed line can leave key text where a comment goes; no real comment is that long a word
+            c = re.sub(r"[A-Za-z0-9+/=_-]{40,}", "?", c)
+        comments.append("unreadable line" if c is None else (_plain(c, 60) if c else "no comment"))
+    more = f", and {len(lines) - 10} more" if len(lines) > 10 else ""
+    return _todo(f"SSH: {len(lines)} key{'' if len(lines) == 1 else 's'} can log in as {name} "
+                 f"(comments: {', '.join(comments)}{more}). Decide whether Raoul's key stays.", step)
+
+
+def check_hotspot(conf):
+    if not netdiag:
+        return _todo("Hotspot: netdiag.py is missing next to portal.py, so the name cannot be read.",
+                     "check the hotspot's name by hand", "before")
+    name = netdiag.hotspot_name(conf, default="")
+    fix = (f"Set ap_name: {SETUP_HOTSPOT} in {conf} and restart comitup "
+           "(a full install.sh run does both).")
+    if name == SETUP_HOTSPOT:
+        return _ok(f"Hotspot: comitup raises {SETUP_HOTSPOT}.")
+    if not name:
+        return _todo(f"Hotspot: {conf} sets no ap_name, or cannot be read, so comitup uses its stock "
+                     f"name. {fix}", f"set the hotspot's name to {SETUP_HOTSPOT}", "before")
+    return _todo(f"Hotspot: comitup raises {_plain(name)}, not {SETUP_HOTSPOT}. {fix}",
+                 f"set the hotspot's name to {SETUP_HOTSPOT}", "before")
+
+
+def _clamped(value, lo, hi, default):
+    """The number board.py would use for a setting: its own default when the file holds
+    something that is not a number, and its limits otherwise. json reads Infinity and 1e400
+    as inf, and int(inf) is an OverflowError, not a ValueError: board.py catches both."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def check_settings(live_dir):
+    """The live settings: where they are read from, the rail key, and what is on the screen."""
+    items = []
+    if os.path.realpath(os.path.dirname(SETTINGS_PATH)) != os.path.realpath(live_dir):
+        items.append(_todo(f"Settings: this reads {SETTINGS_PATH}, not the live file in {live_dir}. "
+                           f"Run {live_dir}/portal.py instead.", f"run this check from {live_dir}"))
+    try:
+        s = load()
+    except (RuntimeError, OSError) as e:
+        items.append(_todo(f"Settings: {_plain(e, 200)}", "fix settings.json by hand"))
+        return items
+    boards = rotation(s)
+    rail_boards = [x for x in boards if x.get("source") == "national-rail"]
+    key = s.get("rail_api_key")
+    has_key = isinstance(key, str) and bool(key.strip())
+    if has_key:
+        items.append(_ok("Rail key: saved."))
+    elif rail_boards:
+        n = len(rail_boards)
+        items.append(_todo(f"Rail key: not saved, and {n} National Rail board{'' if n == 1 else 's'} "
+                           f"on the rotation {'needs' if n == 1 else 'need'} one. "
+                           "Run: sudo python3 portal.py --rail-key YOURKEY",
+                           "save the rail key"))
+    else:
+        items.append(_ok("Rail key: none saved, and no National Rail board needs one."))
+    if not boards:
+        items.append(_todo("Boards: no station is set.", "add a station to the board"))
+    else:
+        names = ", ".join(_plain(x["station_name"], 40) for x in boards)
+        rows = _clamped(s.get("rows"), 1, 8, 4)
+        secs = _clamped(s.get("rotate_seconds"), 5, 300, ROTATE_DEFAULT)
+        if len(boards) == 1:
+            items.append(_ok(f"Boards: one board ({names}), {rows} trains each way. With one board "
+                             f"there is no rotation; the rotation time is {secs} s."))
+        else:
+            items.append(_ok(f"Boards: {len(boards)} on the rotation ({names}), {rows} trains each way, "
+                             f"{secs} s each."))
+    return items
+
+
+def check_updater():
+    # "show" answers LoadState=not-found with exit 0 for a unit that does not exist,
+    # where "is-enabled" and "list-unit-files" end with an error: absence is not a fault.
+    r = run_command(["systemctl", "show", "--property=LoadState,UnitFileState", UPDATE_TIMER])
+    step = "check the self-updater by hand"
+    if r.state != "ok":
+        why = {"missing": "systemctl is not installed", "timeout": "systemctl did not answer"}.get(
+            r.state, "systemctl failed")
+        return _todo(f"Self-updater: could not ask systemd ({why}).", step)
+    got = dict(x.split("=", 1) for x in r.out.splitlines() if "=" in x)
+    load_state, enabled = got.get("LoadState", ""), got.get("UnitFileState", "")
+    if load_state == "not-found":
+        return _ok(f"Self-updater: none installed (no {UPDATE_TIMER}), so updates are by hand.")
+    if not load_state:
+        return _todo("Self-updater: systemctl gave no answer this check can read.", step)
+    if enabled.startswith("enabled"):
+        return _ok(f"Self-updater: {UPDATE_TIMER} is enabled.")
+    return _todo(f"Self-updater: {UPDATE_TIMER} exists but is not enabled ({_plain(enabled or load_state, 20)}). "
+                 f"Enable it with: sudo systemctl enable --now {UPDATE_TIMER}",
+                 "enable the self-updater")
+
+
+def next_line(items):
+    """What to do next, in the order it has to be done. A fix the phone will show comes
+    first, then the phone, then the password, then the rest, and the WiFi last because
+    forgetting it cuts the connection this check runs over. The phone is always a step:
+    this check cannot see a phone."""
+    todo = [i for i in items if i.todo]
+
+    def of(group):
+        return [i.step for i in todo if i.group == group]
+    steps = of("before") + [PHONE_STEP] + of("password") + of("") + of("wifi")
+    if len(steps) == 1:
+        return f"Next: {steps[0]}. Nothing else is left."
+    return "Next, in this order: " + "; ".join(f"{n}) {x}" for n, x in enumerate(steps, 1)) + "."
+
+
+def handover_report(user=None, conf=None, live_dir=None, root=None):
+    """The check as a list of Items and the last line. user, conf, live_dir and root
+    are there so a test can say where it is standing."""
+    conf = conf or COMITUP_CONF
+    live_dir = live_dir or LIVE_DIR
+    if root is None:
+        root = os.geteuid() == 0
+    if user is None:
+        user = find_board_user()
+    items = []
+    if not root:
+        items.append(_todo("This was not run as root. Some lines below may say they could not "
+                           "read what they need. Run it again with sudo.",
+                           "run this check again with sudo", "before"))
+    items.append(check_wifi())
+    if user:
+        items += [check_password(user), check_connect(user), check_ssh(user)]
+    else:
+        for what, step, group in (("Console password", "reset the console password", "password"),
+                                  ("Raspberry Pi Connect", "check Raspberry Pi Connect by hand", ""),
+                                  ("SSH", "decide whether Raoul's SSH key stays", "")):
+            items.append(_todo(f"{what}: could not tell which login the board belongs to. Run this "
+                               "with sudo from that login.", step, group))
+    items.append(check_hotspot(conf))
+    items += check_settings(live_dir)
+    items.append(check_updater())
+    return items, next_line(items)
+
+
+def cli_handover_check(**where):
+    items, last = handover_report(**where)
+    for i in items:
+        print(("TO DO  " if i.todo else "OK     ") + i.text)
+    print(last)
+
+
 def cli_drop(n):
     s = load()
     r = rotation(s)
@@ -812,12 +1184,23 @@ def main():
                     help="how long each board holds the screen")
     ap.add_argument("--forget-wifi", action="store_true",
                     help="forget every saved WiFi network, so the setup hotspot comes up")
+    ap.add_argument("--handover-check", action="store_true",
+                    help="say what is left before the board goes to the recipient; only reads")
     a = ap.parse_args()
 
     # Every one of these edits settings.json and exits. The board picks the change up
     # within a refresh, with no restart: it watches the file.
     did = False
     try:
+        if a.handover_check:
+            # it reads and the rest write, so mixing them would make "reads only" untrue
+            if (a.forget_wifi or a.list_stations or a.line or a.add_station is not None
+                    or a.add_rail is not None or a.rail_key is not None
+                    or a.drop_station is not None or a.rotate is not None):
+                raise SystemExit("--handover-check stands alone. It only reads, "
+                                 "and the other options change things.")
+            cli_handover_check()
+            did = True
         if a.line and a.add_station is None and a.add_rail is None:
             raise SystemExit("--line goes with --add-station or --add-rail")
         if a.rail_key is not None:

@@ -116,6 +116,7 @@ sudo python3 portal.py --rail-key YOURKEY
 sudo python3 portal.py --add-rail DYP --line great-northern
 sudo python3 portal.py --drop-station 2
 sudo python3 portal.py --rotate 30
+sudo python3 portal.py --handover-check      # what is left before the hand-over; it only reads
 ```
 
 Run it in `/opt/tubeboard`, not in the git clone: the live settings are there.
@@ -145,6 +146,38 @@ Before the board goes to someone else, **WiFi > Forget the WiFi** on the
 settings page (type FORGET) makes the Pi forget every network it knows, so the
 setup screen comes up at their house. From a shell: `sudo python3 portal.py
 --forget-wifi`. The board keeps drawing throughout.
+
+## Before the board goes to someone else
+
+```bash
+sudo python3 /opt/tubeboard/portal.py --handover-check
+```
+
+The check only reads. It changes nothing and writes no file. It prints one line
+for each thing that may be left, and each line starts with `OK` or `TO DO`:
+
+- the saved WiFi networks that are not access points: how many, and their names
+  (to the terminal only);
+- the day the console password last changed, from `passwd -S`, against the day
+  set in `portal.py` (`PASSWORD_EXPOSED_ON`). A password older than that day is
+  the one that was exposed. The check never reads or prints a password;
+- whether Raspberry Pi Connect is signed in, asked as the board's login;
+- the SSH keys that can log in as that login: how many, and their comments. The
+  key itself is never printed;
+- the hotspot's name from `/etc/comitup.conf`, which must be `TubeBoard-setup`;
+- whether the rail key is saved (never shown), the boards on the rotation, the
+  rows and the rotation seconds;
+- the self-updater timer, `tubeboard-update.timer`, if there is one. With none,
+  the line is `OK`: updates are by hand.
+
+The last line says what to do next, in order: a fix that the phone will show,
+then the phone test of the setup screen, then the password, then the rest, and
+the WiFi last. Forgetting the WiFi cuts the connection the check runs over.
+
+The board's login is the owner of the git clone, or the person who ran `sudo`.
+Run the check with `sudo`: `passwd -S`, `runuser` and the key file need it. A
+command that is missing or does not answer is reported on its line, and the
+check goes on. Run it from `/opt/tubeboard`, where the live settings are.
 
 ## The screen's identity is pinned
 

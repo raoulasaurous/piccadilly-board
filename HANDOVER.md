@@ -239,13 +239,13 @@ to a port nobody could see, while the panel said "...". This screen can say it.
   comitup's own hotspot connection is named `<ap_name>-0000`, not the ssid, and
   comitup only remakes it at service start, so it is told apart by asking
   NetworkManager its mode, never by its name. comitup raises the hotspot within a
-  minute; the board keeps drawing. This is hand-over step 1 below, which used to
+  minute; the board keeps drawing. This is hand-over step 4 below, which used to
   be done by hand with nmcli. Over Pi Connect it cuts your own connection, by design.
 
 **Settled on the Pi, 9 Oct:** `python3-qrcode` installs under that name on
 trixie; `generate_204` answers 204 from the house.
 **Still unverified on hardware:** that iOS joins an open network from a `WIFI:`
-QR (needs a phone and the hotspot up, so hand-over step 4); that nmcli's terse
+QR (needs a phone and the hotspot up, so hand-over step 1); that nmcli's terse
 output escapes a colon in a name as `\:` (handled, from the man page; no saved
 network has a colon to test it).
 comitup's one-shot output and its connection naming were checked against its
@@ -489,15 +489,26 @@ with a sentence, never silently overwritten.
 
 ## Before it goes to the recipient
 
-1. **Forget the WiFi** from the settings page or `sudo python3 portal.py
-   --forget-wifi`. Otherwise the board carries this house's password, and never
-   raises the setup hotspot at theirs.
+`sudo python3 /opt/tubeboard/portal.py --handover-check` says which of these is
+still to do. It only reads: each line starts `OK` or `TO DO`, and the last line
+gives the order. It covers the saved WiFi (names on the terminal only), the age of
+the console password, whether Pi Connect is signed in, the SSH keys (comments
+only), the hotspot's name, the rail key (never shown), the boards, and the
+self-updater timer if there is one. It cannot see the phone test, so that is
+always a step. Run it again after each step.
+
+The list below is the order the check gives. The WiFi is last, because forgetting it
+cuts the connection the check runs over.
+
+1. **See the setup screen and the hotspot on a phone once.** On 14 Sept the
+   join flow worked end to end but under the stock name; nobody has yet seen
+   **TubeBoard-setup**, the QR, or the WIFI OK screen.
 2. Reset the console password (required, see "The Pi").
 3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect). Decide
    whether Raoul's SSH key stays. Claude recommended keeping both, and saying so.
-4. **See the setup screen and the hotspot on a phone once.** On 14 Sept the
-   join flow worked end to end but under the stock name; nobody has yet seen
-   **TubeBoard-setup**, the QR, or the WIFI OK screen.
+4. **Forget the WiFi, last,** from the settings page or `sudo python3 portal.py
+   --forget-wifi`. Otherwise the board carries this house's password, and never
+   raises the setup hotspot at theirs.
 5. Their first power-on is then: the setup screen, join from a phone, choose
    their WiFi, WIFI OK, trains. Settings at http://tubeboard.local:8080, which
    the footer says, boxed, for the first minute after the board has their IP.

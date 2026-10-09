@@ -20,6 +20,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1242,6 +1243,388 @@ def test_forget_wifi():
         portal._nm, portal.hotspot_name = saved_nm, saved_hs
 
 
+HC_KEY = "AAAAC3NzaC1lZDI1NTE5AAAAIKEYMATERIAL0123456789abcdef"
+HC_PASSWORD = "CORRECT-HORSE-BATTERY"
+HC_RAIL = "RAILKEYSECRET0123"
+Ran = portal.Ran
+HC_KEYS = (
+    "# a comment line, which is not a key\n"
+    f"ssh-ed25519 {HC_KEY} owner@laptop\n"
+    f'command="/bin/true",no-pty ssh-rsa {HC_KEY}RSA second key with spaces\n'
+    f"ecdsa-sha2-nistp256 {HC_KEY}ECDSA\n"
+    f"{HC_KEY}BARE\n"
+    f"ssh-ed25519 {HC_KEY}ED2 {HC_KEY}ED2\n")
+
+
+def hc_runner(calls, wifi=("HomeNet", "Mums:House"), passwd=None, connect=None, updater=None,
+              everything=None):
+    """A stand-in for portal.run_command that answers like the Pi would, and writes down
+    every command it was asked for. everything= answers all of them the same way."""
+    passwd = passwd or Ran("ok", "pi P 2026-09-01 0 99999 7 -1\n", "")
+    connect = connect or Ran("ok", "Signed in: no\nRemote shell: disabled\n", "")
+    updater = updater or Ran("ok", "LoadState=not-found\nUnitFileState=\n", "")
+
+    def run(args, timeout=10):
+        calls.append(list(args))
+        if everything is not None:
+            return everything
+        if args[0] == "nmcli" and args[1:3] == ["-t", "-f"]:
+            rows = [f"1{n}-uuid:802-11-wireless:" + name.replace("\\", "\\\\").replace(":", "\\:")
+                    for n, name in enumerate(wifi)]
+            rows += ["22-uuid:ethernet:Wired connection 1",
+                     "33-uuid:802-11-wireless:TubeBoard-setup-0000"]
+            return Ran("ok", "\n".join(rows) + "\n", "")
+        if args[0] == "nmcli" and args[1] == "-g":
+            return Ran("ok", "ap\n" if "33-uuid" in args else "infrastructure\n", "")
+        if args[0] == "passwd":
+            return passwd
+        if args[0] == "runuser":
+            return connect
+        if args[0] == "systemctl":
+            return updater
+        return Ran("missing", "", "")
+    return run
+
+
+def hc_find(lines, label):
+    return next((x for x in lines if label in x), "")
+
+
+def test_handover_check():
+    print("\nthe hand-over check")
+    home = os.path.join(TMP, "home", "pi")
+    os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
+    keys = os.path.join(home, ".ssh", "authorized_keys")
+    conf = os.path.join(TMP, "comitup.conf")
+    user = ("pi", 1000, home)
+    tfl = {"line": "piccadilly", "station_id": "940GZZLUASL", "station_name": "Arsenal"}
+    saved = portal.run_command, portal.hotspot_name
+    portal.hotspot_name = lambda: "TubeBoard-setup"
+    calls = []
+
+    def run(root=True, where=None, **world):
+        calls.clear()
+        portal.run_command = hc_runner(calls, **world)
+        out = quiet(lambda: portal.cli_handover_check(user=user, conf=conf, live_dir=TMP, root=root,
+                                                      **(where or {})))
+        return out, out.splitlines()
+
+    def tree():
+        return sorted((os.path.join(d, f), os.stat(os.path.join(d, f)).st_mtime_ns)
+                      for d, _, fs in os.walk(TMP) for f in fs)
+
+    try:
+        # --- nothing done yet
+        write_portal({"stations": [tfl, RAIL_STATION], "rows": 4, "rotate_seconds": 20})
+        with open(keys, "w") as f:
+            f.write(HC_KEYS)
+        with open(conf, "w") as f:
+            f.write("ap_name: comitup-123\n")
+        before_files, before_settings = tree(), open(portal.SETTINGS_PATH, "rb").read()
+        out, lines = run(updater=Ran("ok", "LoadState=loaded\nUnitFileState=disabled\n", ""))
+        check("it changes nothing: the files and the settings are as they were",
+              tree() == before_files and open(portal.SETTINGS_PATH, "rb").read() == before_settings)
+        check("every command it ran only looks",
+              all((c[0] == "nmcli" and "show" in c and not {"delete", "modify", "up", "down"} & set(c))
+                  or c[:2] == ["passwd", "-S"] or c[:2] == ["systemctl", "show"]
+                  or (c[0] == "runuser" and c[-2:] == ["rpi-connect", "status"]) for c in calls), calls)
+        check("every line but the last starts with OK or TO DO, and the last says what is next",
+              all(x.startswith(("OK ", "TO DO ")) for x in lines[:-1]) and lines[-1].startswith("Next"), out)
+        for label in ("WiFi:", "Console password:", "Raspberry Pi Connect:", "SSH:", "Hotspot:",
+                      "Rail key:", "Self-updater:"):
+            check(f"nothing done: {label} is a TO DO", hc_find(lines, label).startswith("TO DO"), out)
+        w = hc_find(lines, "WiFi:")
+        check("the WiFi line counts the saved networks, names them, and says to forget them last",
+              "2 saved networks" in w and "HomeNet" in w and "Mums:House" in w
+              and "Forget the WiFi last, it cuts this connection" in w
+              and "Wired" not in w and "TubeBoard-setup-0000" not in w, w)
+        pw = hc_find(lines, "Console password:")
+        check("the password line says it is older than the day and was typed into a chat",
+              "2026-09-01" in pw and "before 2026-10-09" in pw and "typed into a chat" in pw, pw)
+        check("it asked about the login's password with passwd -S",
+              ["passwd", "-S", "pi"] in calls)
+        rc = [c for c in calls if c[0] == "runuser"]
+        check("it asked Pi Connect as that login, with that login's own runtime folder",
+              len(rc) == 1 and rc[0][:4] == ["runuser", "-u", "pi", "--"]
+              and "XDG_RUNTIME_DIR=/run/user/1000" in rc[0], rc)
+        check("not signed in to Pi Connect is said plainly", "not signed in" in hc_find(lines, "Raspberry Pi Connect:"))
+        ssh = hc_find(lines, "SSH:")
+        check("the keys are counted and named by comment, and the decision is Raoul's",
+              "5 keys" in ssh and "owner@laptop" in ssh and "second key with spaces" in ssh
+              and "no comment" in ssh and "unreadable line" in ssh
+              and "Decide whether Raoul's key stays" in ssh, ssh)
+        check("the hotspot line gives the name comitup has and the name wanted",
+              "comitup-123" in hc_find(lines, "Hotspot:") and "TubeBoard-setup" in hc_find(lines, "Hotspot:"))
+        rk = hc_find(lines, "Rail key:")
+        check("the missing rail key is a TO DO because a National Rail board needs it",
+              "not saved" in rk and "1 National Rail board" in rk, rk)
+        bd = hc_find(lines, "Boards:")
+        check("the boards line gives the stations, the rows and the rotation seconds",
+              bd.startswith("OK") and "Arsenal, Drayton Park" in bd and "4 trains" in bd and "20 s each" in bd, bd)
+        check("the missing self-updater timer is not enabled", "not enabled" in hc_find(lines, "Self-updater:"))
+        last = lines[-1]
+        steps = last.split("; ")
+        check("the last line puts the hotspot's name first, then the phone, then the password",
+              last.index("hotspot's name") < last.index("on a phone") < last.index("console password"), last)
+        check("and the WiFi last, because forgetting it cuts the connection",
+              steps[-1].rstrip(".").endswith("forget the WiFi last, it cuts this connection")
+              and last.count("forget the WiFi") == 1, last)
+        check("no key text, no password text and no rail key in what it printed",
+              "AAAA" not in out and "KEYMATERIAL" not in out and HC_PASSWORD not in out and HC_RAIL not in out)
+
+        # --- everything done
+        write_portal({"stations": [tfl, RAIL_STATION], "rows": 4, "rotate_seconds": 30,
+                      "rail_api_key": HC_RAIL})
+        os.remove(keys)
+        with open(conf, "w") as f:
+            f.write("# comitup\nap_name: TubeBoard-setup\n")
+        out, lines = run(wifi=(), passwd=Ran("ok", "pi P 2026-10-10 0 99999 7 -1\n", ""),
+                         connect=Ran("ok", "Signed in: yes\nRemote shell: allowed\n", ""),
+                         updater=Ran("ok", "LoadState=loaded\nUnitFileState=enabled\n", ""))
+        check("all done: every line but the last is OK", all(x.startswith("OK ") for x in lines[:-1]) and len(lines) > 6, out)
+        check("all done: the last line leaves only the phone, which this cannot see",
+              lines[-1].startswith("Next: look at the setup screen") and "on a phone" in lines[-1]
+              and lines[-1].endswith("Nothing else is left."), lines[-1])
+        check("the rail key is reported saved, and never printed",
+              "Rail key: saved" in out and HC_RAIL not in out)
+        check("no saved WiFi, and a password changed after the day, are both OK",
+              "no saved network" in hc_find(lines, "WiFi:") and "2026-10-10" in hc_find(lines, "Console password:"))
+        check("no authorized_keys file means no key", "no key can log in" in hc_find(lines, "SSH:"))
+        check("a signed-in Pi Connect is OK and reminds Raoul to tell the recipient",
+              "signed in, so Raoul can log in remotely" in hc_find(lines, "Raspberry Pi Connect:")
+              and "The recipient must be told" in hc_find(lines, "Raspberry Pi Connect:"))
+        with open(keys, "w") as f:
+            f.write("# nothing here\n\n")
+        out, lines = run(wifi=())
+        check("a key file with only comments has no key", "no key is authorised" in hc_find(lines, "SSH:"))
+
+        # --- the commands are not there, or do not answer
+        os.remove(keys)
+        os.remove(conf)
+        os.remove(portal.SETTINGS_PATH)
+        for what, ran, words in (("missing", Ran("missing", "", ""), "not installed"),
+                                 ("hung", Ran("timeout", "", ""), "did not answer")):
+            out, lines = run(everything=ran)
+            check(f"commands {what}: it still finishes and ends with what is next",
+                  len(lines) > 6 and lines[-1].startswith("Next"), out)
+            for label in ("WiFi:", "Console password:", "Raspberry Pi Connect:", "Self-updater:"):
+                x = hc_find(lines, label)
+                check(f"commands {what}: {label} is a TO DO that says so", x.startswith("TO DO") and words in x, x)
+            check(f"commands {what}: the missing file and settings are said, not crashed on",
+                  hc_find(lines, "Hotspot:").startswith("TO DO") and hc_find(lines, "Boards:").startswith("TO DO"), out)
+        out, lines = run(everything=Ran("failed", "", f"permission denied {HC_PASSWORD}"))
+        check("a refused command is a TO DO, and its words are not copied out",
+              hc_find(lines, "Console password:").startswith("TO DO") and "needs sudo" in hc_find(lines, "Console password:")
+              and HC_PASSWORD not in out, out)
+
+        # --- not root
+        out, lines = run(root=False)
+        check("without root it says so first, and the last line starts with running it again",
+              lines[0].startswith("TO DO") and "not run as root" in lines[0]
+              and lines[-1].startswith("Next, in this order: 1) run this check again with sudo"), out)
+
+        # --- the password line, one case at a time
+        def pw(answer, **kw):
+            return hc_find(run(passwd=answer, **kw)[1], "Console password:")
+        check("a password changed the day before is a TO DO",
+              pw(Ran("ok", "pi P 2026-10-08 0 99999 7 -1", "")).startswith("TO DO"))
+        check("a password changed on the day is OK",
+              pw(Ran("ok", "pi P 2026-10-09 0 99999 7 -1", "")).startswith("OK"))
+        check("the older shadow date format is read too",
+              pw(Ran("ok", "pi P 10/08/2026 0 99999 7 -1", "")).startswith("TO DO")
+              and pw(Ran("ok", "pi P 10/12/2026 0 99999 7 -1", "")).startswith("OK"))
+        check("a locked account is said to be locked", "locked" in pw(Ran("ok", "pi L 2026-10-20 0 99999 7 -1", "")))
+        check("no password at all is a TO DO", "no password" in pw(Ran("ok", "pi NP 2026-10-20 0 99999 7 -1", "")))
+        x = pw(Ran("ok", f"pi P {HC_PASSWORD} 0 99999 7 -1", ""))
+        check("an answer it cannot read is a TO DO and is not echoed",
+              x.startswith("TO DO") and HC_PASSWORD not in x and "no change date" in x, x)
+
+        # --- Pi Connect, one answer at a time
+        def pc(answer):
+            return hc_find(run(connect=answer)[1], "Raspberry Pi Connect:")
+        check("signed in is OK", pc(Ran("ok", "Signed in: yes\n", "")).startswith("OK"))
+        check("an answer on stderr from a failed status is still read",
+              "not signed in" in pc(Ran("failed", "", "Signed in: no")))
+        x = pc(Ran("failed", "", f"Failed to connect to bus {HC_PASSWORD}"))
+        check("an answer it does not know is a TO DO, and is not echoed",
+              x.startswith("TO DO") and HC_PASSWORD not in x and "no answer" in x, x)
+        check("a command that is not installed is said so",
+              "not installed" in pc(Ran("missing", "env: 'rpi-connect': No such file", "")))
+
+        # --- the self-updater
+        def up(answer):
+            return hc_find(run(updater=answer)[1], "Self-updater:")
+        check("no timer at all is OK, because the updater is another change",
+              up(Ran("ok", "LoadState=not-found\nUnitFileState=\n", "")).startswith("OK"))
+        check("an enabled timer is OK", up(Ran("ok", "LoadState=loaded\nUnitFileState=enabled\n", "")).startswith("OK"))
+        check("a disabled timer is a TO DO that gives the command",
+              "systemctl enable --now tubeboard-update.timer" in up(Ran("ok", "LoadState=loaded\nUnitFileState=disabled\n", "")))
+
+        # --- the hotspot and the settings, one case at a time
+        write_portal({"stations": [tfl], "rows": 12, "rotate_seconds": "soon"})
+        with open(conf, "w") as f:
+            f.write("ap_name: TubeBoard-setup\n")
+        lines = run()[1]
+        check("rows are shown as the board clamps them, and the one board has no rotation",
+              "8 trains" in hc_find(lines, "Boards:") and "no rotation" in hc_find(lines, "Boards:")
+              and "30 s" in hc_find(lines, "Boards:"), hc_find(lines, "Boards:"))
+        # json reads Infinity and 1e400 as inf, and int(inf) is an OverflowError. The board
+        # survives that, so the check must too, and must still print every line.
+        for field, text in (("rows", "Infinity"), ("rows", "1e400"), ("rows", "NaN"),
+                            ("rotate_seconds", "Infinity"), ("rotate_seconds", "-1e400")):
+            body = json.dumps({"stations": [tfl, RAIL_STATION], "rows": 4, "rotate_seconds": 20})
+            with open(portal.SETTINGS_PATH, "w") as f:
+                f.write(body.replace(f'"{field}": {4 if field == "rows" else 20}', f'"{field}": {text}'))
+            try:
+                lines = run()[1]
+                bd = hc_find(lines, "Boards:")
+                crashed = ""
+            except Exception as e:                                  # noqa: BLE001
+                bd, lines, crashed = "", [], f"{type(e).__name__}: {e}"
+            want = "4 trains each way" if field == "rows" else "30 s each"
+            check(f"{field} {text} in settings.json gives the board's default, not a crash",
+                  not crashed and want in bd and lines[-1].startswith("Next"), crashed or bd)
+        write_portal({"stations": [tfl], "rows": 12, "rotate_seconds": "soon"})
+        lines = run()[1]
+        check("no rail key and no rail board is OK", hc_find(lines, "Rail key:").startswith("OK"))
+        check("the right hotspot name is OK", hc_find(lines, "Hotspot:").startswith("OK"))
+        lines = quiet(lambda: portal.cli_handover_check(user=user, conf=conf, live_dir="/opt/elsewhere",
+                                                        root=True)).splitlines()
+        check("settings read from somewhere other than the live folder are a TO DO",
+              hc_find(lines, "Settings:").startswith("TO DO") and "/opt/elsewhere" in hc_find(lines, "Settings:"))
+        with open(portal.SETTINGS_PATH, "w") as f:
+            f.write("{not json")
+        lines = run()[1]
+        check("a broken settings file is a TO DO and not a crash",
+              hc_find(lines, "Settings:").startswith("TO DO") and lines[-1].startswith("Next"))
+        write_portal(dict(BASE))
+
+        # --- a name with a control character cannot move the cursor
+        out, lines = run(wifi=("Evil\x1b[2JNet\nTO DO fake",))
+        check("a saved name with an escape or a line break stays on one printable line",
+              "\x1b" not in out and sum(x.startswith("TO DO fake") for x in lines) == 0, repr(out))
+    finally:
+        portal.run_command, portal.hotspot_name = saved
+
+
+def test_run_command():
+    print("\nthe one door for outside commands")
+    rc = portal.run_command
+    check("a program that is not there is missing", rc(["tubeboard-no-such-program"]).state == "missing")
+    check("exit 127 is missing too, which is what runuser and env say", rc(["sh", "-c", "exit 127"]).state == "missing")
+    r = rc(["sh", "-c", "echo out; echo err >&2; exit 3"])
+    check("any other exit is failed, with both streams kept", r.state == "failed" and r.out == "out\n" and r.err == "err\n", r)
+    check("exit 0 is ok", rc(["sh", "-c", "echo hello"]) == portal.Ran("ok", "hello\n", ""))
+    check("a command that hangs is a timeout", rc(["sh", "-c", "sleep 5"], timeout=0.2).state == "timeout")
+    check("a command that asks a question gets no answer and ends",
+          rc(["sh", "-c", "read x; echo got:$x"], timeout=5) == portal.Ran("ok", "got:\n", ""))
+
+
+def test_board_user():
+    print("\nwhich login the board belongs to")
+    saved = portal.pwd, portal.HERE, os.environ.get("SUDO_USER")
+    me = os.getuid()
+    entries = {me: ("owner", me, "/home/owner"), 0: ("root", 0, "/root")}
+    names = {"sudoer": ("sudoer", 1234, "/home/sudoer"), "root": ("root", 0, "/root")}
+
+    def fake_pwd(uid_table):
+        def entry(t):
+            return types.SimpleNamespace(pw_name=t[0], pw_uid=t[1], pw_dir=t[2])
+
+        def getpwuid(uid):
+            if uid not in uid_table:
+                raise KeyError(uid)
+            return entry(uid_table[uid])
+
+        def getpwnam(n):
+            if n not in names:
+                raise KeyError(n)
+            return entry(names[n])
+        return types.SimpleNamespace(getpwuid=getpwuid, getpwnam=getpwnam)
+    clone = os.path.join(TMP, "clone")
+    os.makedirs(os.path.join(clone, ".git"), exist_ok=True)
+    os.makedirs(os.path.join(clone, "pi"), exist_ok=True)
+    try:
+        portal.pwd = fake_pwd(entries)
+        portal.HERE = os.path.join(clone, "pi")
+        os.environ["SUDO_USER"] = "sudoer"
+        check("inside a clone it is the clone's owner", portal.find_board_user() == ("owner", me, "/home/owner"))
+        portal.HERE = os.path.join(TMP, "opt-tubeboard")
+        check("outside a clone it is the person who ran sudo", portal.find_board_user() == ("sudoer", 1234, "/home/sudoer"))
+        os.environ["SUDO_USER"] = "root"
+        check("root is never the answer", portal.find_board_user() is None)
+        os.environ["SUDO_USER"] = "no such; user"
+        check("a name that is not a login name is not looked up", portal.find_board_user() is None)
+        del os.environ["SUDO_USER"]
+        check("with no clone and no sudo it says it cannot tell", portal.find_board_user() is None)
+        portal.HERE = os.path.join(clone, "pi")
+        portal.pwd = fake_pwd({me: ("root", 0, "/root")})
+        os.environ["SUDO_USER"] = "sudoer"
+        check("a clone owned by root falls back to the person who ran sudo",
+              portal.find_board_user() == ("sudoer", 1234, "/home/sudoer"))
+    finally:
+        portal.pwd, portal.HERE = saved[0], saved[1]
+        if saved[2] is None:
+            os.environ.pop("SUDO_USER", None)
+        else:
+            os.environ["SUDO_USER"] = saved[2]
+
+
+def test_handover_flag():
+    print("\n--handover-check from the shell")
+    write_portal(dict(BASE))
+    calls = []
+    saved = portal.run_command, portal.find_board_user, portal.COMITUP_CONF, portal.LIVE_DIR, portal.hotspot_name
+    portal.run_command = hc_runner(calls)
+    portal.find_board_user = lambda: ("pi", 1000, os.path.join(TMP, "home", "pi"))
+    portal.COMITUP_CONF, portal.LIVE_DIR = os.path.join(TMP, "no-comitup.conf"), TMP
+    portal.hotspot_name = lambda: "TubeBoard-setup"
+    argv = sys.argv
+    try:
+        sys.argv = ["portal.py", "--handover-check"]
+        out = quiet(portal.main)
+        check("the flag prints the check and exits without starting the page",
+              "WiFi:" in out and out.splitlines()[-1].startswith("Next"), out)
+        with open(portal.SETTINGS_PATH, "w") as f:
+            f.write('{"line": "piccadilly", "station_id": "940GZZLUASL", "station_name": "Arsenal", '
+                    '"rows": Infinity, "rotate_seconds": 1e400}')
+        try:
+            out = quiet(portal.main)
+        except Exception as e:                                      # noqa: BLE001
+            out = f"{type(e).__name__}: {e}"
+        check("the flag still prints every line when the file holds Infinity",
+              "WiFi:" in out and "Boards:" in out and out.splitlines()[-1].startswith("Next"), out)
+        write_portal(dict(BASE))
+        del calls[:]
+        msg = main_with("--handover-check", "--forget-wifi")
+        check("mixed with a flag that changes things, it refuses and changes nothing",
+              "stands alone" in msg and not [c for c in calls if "delete" in c], (msg, calls))
+        msg = main_with("--handover-check", "--rail-key", HC_RAIL)
+        check("and a rail key is not saved by that mix", "stands alone" in msg and "rail_api_key" not in open(portal.SETTINGS_PATH).read())
+    finally:
+        sys.argv = argv
+        (portal.run_command, portal.find_board_user, portal.COMITUP_CONF, portal.LIVE_DIR,
+         portal.hotspot_name) = saved
+
+
+def test_handover_doc():
+    print("\nHANDOVER.md lists the hand-over steps in the order the check gives")
+    path = os.path.join(HERE, "..", "HANDOVER.md")
+    if not os.path.exists(path):
+        print("  skipped: HANDOVER.md is not next to this folder")
+        return
+    text = open(path, encoding="utf-8").read()
+    part = text.split("## Before it goes to the recipient", 1)[1].split("\n## ", 1)[0]
+    steps = [x.lower() for x in re.findall(r"^\d+\. (.*(?:\n   .*)*)", part, re.M)]
+    at = {k: next((n for n, x in enumerate(steps) if k in x), None)
+          for k in ("phone", "password", "remotely", "forget the wifi", "first power-on")}
+    check("every step is in the list", None not in at.values(), at)
+    check("the phone, then the password, then the rest, then the WiFi, then the first power-on",
+          at["phone"] < at["password"] < at["remotely"] < at["forget the wifi"] < at["first power-on"], at)
+    check("the WiFi is the last step before the first power-on",
+          at["forget the wifi"] + 1 == at["first power-on"], at)
+
+
 def test_both_ends():
     print("\nthe page and the board agree on the file")
     write_portal(dict(BASE))
@@ -1548,6 +1931,11 @@ if __name__ == "__main__":
     test_shell()
     test_page()
     test_forget_wifi()
+    test_run_command()
+    test_board_user()
+    test_handover_check()
+    test_handover_flag()
+    test_handover_doc()
     test_both_ends()
     print()
     if FAILS:
