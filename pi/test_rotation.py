@@ -1174,6 +1174,11 @@ def test_ticker():
     b = board.render(1920, 1080, v, cols, "Minor Delays", True, "Signal failure", at, at, True)
     check("a status that fits does not scroll, and draws as before",
           "strip" not in short and a.tobytes() == b.tobytes())
+    other_board = {}
+    board.render(1920, 1080, dict(v, station_id="940GZZLUHBN", station_name="Holborn"), cols,
+                 "Severe Delays", True, why, at, at, True, ticker=other_board)
+    check("another board with the same status is another key, so it starts over",
+          other_board["key"] != spec["key"])
     gone = {}
     board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, None, False, ticker=gone)
     check("no live data: nothing to scroll", "strip" not in gone)
@@ -1219,6 +1224,9 @@ def test_ticker():
     check("which changes when the number does", shot.crop(c["box"]).tobytes() != probe_t.countdown().tobytes())
     row = shot.crop((1000, int((1080 - 2.5 * 19.2 - 4.9 * 19.2 + 1080) / 2) - 25, c["box"][0], 1080))
     check("the address sits in a white box", board.WHITE in {k for _, k in row.getcolors(maxcolors=1 << 16)})
+    edge = [shot.getpixel((1300, y)) for y in range(960, 1000)]
+    check("drawn as one crisp pixel of white, not two greys",
+          edge.count(board.WHITE) == 1 and all(p in (board.WHITE, board.BG) for p in edge), edge)
 
     # the ticker against a screen made of a file, on a clock the test turns
     class FB:
@@ -1264,8 +1272,9 @@ def test_ticker():
         check("a full redraw gets the current window patched in, so it never jumps back",
               np.array_equal(frame[y0:y1, x0:x1], t.window()) and not np.array_equal(t.window(), start))
         with t.lock:
-            t.set(dict(spec))
-        check("the same status redrawn keeps its place", t.off == t.step)
+            t.set(board.Ticker.prepare(dict(spec)))
+        check("the same status redrawn keeps its place, prepared outside the lock", t.off == t.step
+              and np.array_equal(t.window(), board.pack565(strip)[:, t.step: t.step + x1 - x0]))
         n = 0
         while t.off != 0 and n < 10000:
             t.tick()

@@ -728,7 +728,7 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           rotation=None, diag=None, address=None, ss=2, ticker=None, address_left=None):
+           rotation=None, diag=None, address=None, ss=2, ticker=None, address_left=None, _align=1):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
@@ -745,7 +745,7 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         inner = {"align": ss} if ticker is not None else None
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
                      status_why, now, updated, live, rotation=rotation, diag=diag,
-                     address=address, ss=1, ticker=inner, address_left=address_left)
+                     address=address, ss=1, ticker=inner, address_left=address_left, _align=ss)
         if inner and inner.get("strip") is not None:
             x0, y0, x1, y1 = inner["box"]
             ticker.update(box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss),
@@ -837,8 +837,12 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
                                    "mid": uy - cy0, "size": 1.35 * u}
         bp = 0.6 * u
         bx0 = card_right - text_w(d, card, fupd) - 2 * bp
-        d.rectangle([bx0, uy - 1.25 * u, card_right, uy + 1.25 * u], outline=WHITE,
-                    width=max(1, round(0.05 * u)))
+        # One screen pixel of white: drawn _align pixels wide on _align boundaries,
+        # or the reduction smears a 2-px line across two pixels as two greys.
+        al = _align
+        d.rectangle([int(bx0 // al * al), int((uy - 1.25 * u) // al * al),
+                     int(-(-card_right // al) * al) - 1, int(-(-(uy + 1.25 * u) // al) * al) - 1],
+                    outline=WHITE, width=al)
         d.text((card_right - bp, uy), card, font=fupd, fill=DIM, anchor="rm")
         right_edge = bx0 - 2.0 * u
     else:
@@ -908,7 +912,9 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
             strip = Image.new("RGB", (period, by1 - by0), BG)
             ImageDraw.Draw(strip).text((lead, fy - by0), status_why, font=fs, fill=DIM, anchor="lm")
             img.paste(strip.crop((0, 0, bx1 - bx0, by1 - by0)), (bx0, by0))
-            ticker.update(box=(bx0, by0, bx1, by1), strip=strip, key=(status_text, status_why))
+            # the board is in the key: another board with the same status starts over too
+            ticker.update(box=(bx0, by0, bx1, by1), strip=strip,
+                          key=(settings.get("line"), settings.get("station_id"), status_text, status_why))
         elif status_why:
             why = clip(d, "- " + status_why, fs, right_edge - x3)
             if why and why != "-...":
@@ -1098,8 +1104,14 @@ class Framebuffer:
             patch(v)        # the ticker's current window, so a redraw never jumps it back
         return v.astype("<u2").tobytes()
 
+    def write_frame(self, v):
+        """A frame already packed as RGB565 (pack565), onto the screen."""
+        self._write(v.astype("<u2").tobytes())
+
     def show(self, img, patch=None):
-        raw = self._pack(img, patch)
+        self._write(self._pack(img, patch))
+
+    def _write(self, raw):
         if self.stride != self.row:  # pad each line out to the stride
             pad = b"\0" * (self.stride - self.row)
             raw = b"".join(raw[i:i + self.row] + pad for i in range(0, len(raw), self.row))
@@ -1141,7 +1153,10 @@ class Ticker:
     and comes round to rest again. A new status, or another board, starts over.
 
     Everything touching the screen happens under `lock`; the main loop holds it
-    from set() to the end of show(), so a redraw and a slide never interleave."""
+    from set() to the end of the frame's write, so a redraw and a slide never
+    interleave. The slow parts of a redraw (packing the frame, 105 ms on the Pi,
+    and the strip, 12 ms) happen before the lock: held through them, the slide
+    stopped for up to 190 ms every 10 s, which the eye catches."""
     FPS = 30
     PAUSE = 3.0
 
@@ -1158,6 +1173,18 @@ class Ticker:
         self.rest_until = 0.0
         self.failed = False
 
+    @staticmethod
+    def prepare(spec):
+        """The slow half of set(): pack and tile the strip. Done before taking the
+        lock, so the slide does not stop for it (12 ms on the Pi)."""
+        if spec and spec.get("strip") is not None:
+            import numpy as np
+            one = pack565(spec["strip"])
+            w = spec["box"][2] - spec["box"][0]
+            spec = dict(spec, packed=(np.concatenate([one] * (2 + w // max(1, one.shape[1])), axis=1),
+                                      one.shape[1]))
+        return spec
+
     def set(self, spec):
         """What render() handed back for the frame about to be shown. Lock held."""
         c = (spec or {}).get("count")
@@ -1167,16 +1194,14 @@ class Ticker:
         if not spec or spec.get("strip") is None:
             self.spec = self.key = None
             return
-        import numpy as np
-        one = pack565(spec["strip"])
-        period = one.shape[1]
-        w = spec["box"][2] - spec["box"][0]
-        reps = 2 + w // max(1, period)
+        if "packed" not in spec:
+            spec = self.prepare(spec)
+        tiled, period = spec["packed"]
         if spec["key"] != self.key:
             self.key, self.off = spec["key"], 0
             self.rest_until = time.monotonic() + self.PAUSE
         self.off %= period
-        self.spec = (spec["box"], np.concatenate([one] * reps, axis=1), period)
+        self.spec = (spec["box"], tiled, period)
 
     def window(self):
         box, tiled, _ = self.spec
@@ -1401,9 +1426,12 @@ def main():
                                address=addr["value"] if card else None, ticker=spec,
                                address_left=left if card else None)
             if ticker:
+                v = pack565(frame)
+                ready = Ticker.prepare(spec)
                 with ticker.lock:
-                    ticker.set(spec)
-                    fb.show(frame, patch=ticker.patch)
+                    ticker.set(ready)
+                    ticker.patch(v)
+                    fb.write_frame(v)
             else:
                 fb.show(frame)
             draw_failures = 0
