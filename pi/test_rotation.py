@@ -701,6 +701,7 @@ def test_wifi():
     d = board.ImageDraw.Draw(img)
     # the heading is the direction alone: no "towards", however long or short
     far = "Heathrow Terminals 2 & 3 via Hounslow West, Hatton Cross and the long way round"
+    u = 1920 / 100.0
     with_tow = board.render(1920, 1080, v[0], [{"label": "NORTHBOUND", "towards": far, "rows": rows}] * 2,
                             "Good Service", True, "", at, at, True, ss=1)
     without = board.render(1920, 1080, v[0], [{"label": "NORTHBOUND", "towards": "", "rows": rows}] * 2,
@@ -1126,10 +1127,127 @@ def test_both_ends():
           [(v["station_name"], v["line"]) for v in views])
 
 
+def test_ticker():
+    print("\na status too long for its line scrolls")
+    import numpy as np
+    v = views_for({})[0]
+    at = dt.datetime(2026, 10, 9, 14, 0)
+    cols = [{"label": "WESTBOUND", "towards": "", "rows": [("Uxbridge", 60)]},
+            {"label": "EASTBOUND", "towards": "", "rows": [("Cockfosters", 120)]}]
+    why = ("Severe delays between Acton Town and Uxbridge while we fix a signal failure "
+           "at Ealing Common. Tickets are accepted on London Buses and the Central line.")
+    spec = {}
+    img = board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, at, True, ticker=spec)
+    check("a long status hands its line to the ticker", spec.get("strip") is not None, sorted(spec))
+    x0, y0, x1, y1 = spec["box"]
+    u = 19.2
+    check("the box sits in the footer, clear of 'Status:' and the right-hand text",
+          130 < x0 < 300 and x1 < 1920 - 2.5 * u - 100 and 950 < y0 < y1 < 1080, spec["box"])
+    strip = spec["strip"]
+    check("the strip is the box's height and one pass is longer than the box",
+          strip.height == y1 - y0 and strip.width > x1 - x0, (strip.size, spec["box"]))
+    check("the frame carries the start of the strip, the same pixels",
+          img.crop(spec["box"]).tobytes() == strip.crop((0, 0, x1 - x0, y1 - y0)).tobytes())
+    check("and says the whole reason, not cut at the box",
+          strip.width - (x1 - x0) > 500, strip.width)
+    plain = board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, at, True)
+    check("a still frame (--png) still cuts it with an ellipsis instead",
+          plain.crop(spec["box"]).tobytes() != img.crop(spec["box"]).tobytes())
+
+    short = {}
+    a = board.render(1920, 1080, v, cols, "Minor Delays", True, "Signal failure", at, at, True, ticker=short)
+    b = board.render(1920, 1080, v, cols, "Minor Delays", True, "Signal failure", at, at, True)
+    check("a status that fits does not scroll, and draws as before",
+          "strip" not in short and a.tobytes() == b.tobytes())
+    gone = {}
+    board.render(1920, 1080, v, cols, "Severe Delays", True, why, at, None, False, ticker=gone)
+    check("no live data: nothing to scroll", "strip" not in gone)
+
+    # the ticker against a screen made of a file, on a clock the test turns
+    class FB:
+        w, h, bpp = 1920, 1080, 16
+        stride = 3840
+        row = 3840
+
+        def __init__(self):
+            self.f = open(os.path.join(TMP, "fb0"), "wb+", buffering=0)
+            self.f.write(b"\0" * (self.stride * self.h))
+            self.writes = 0
+
+        def write_box(self, box, v):
+            self.writes += 1
+            board.Framebuffer.write_box(self, box, v)
+
+        def read(self, box):
+            x0, y0, x1, y1 = box
+            out = []
+            for y in range(y0, y1):
+                self.f.seek(y * self.stride + x0 * 2)
+                out.append(np.frombuffer(self.f.read((x1 - x0) * 2), dtype="<u2"))
+            return np.array(out)
+
+    clock = [5000.0]
+    saved = board.time
+    board.time = types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0], sleep=lambda s: None)
+    try:
+        fb = FB()
+        t = board.Ticker(fb, 19.2)
+        with t.lock:
+            t.set(spec)
+        start = board.pack565(strip)[:, : x1 - x0]
+        check("it starts at rest with the line's start in place",
+              t.off == 0 and not t.tick() and fb.writes == 0)
+        clock[0] += board.Ticker.PAUSE + 0.01
+        check("then slides", t.tick() and t.off == t.step and fb.writes == 1)
+        check("and what it wrote is the strip, moved by one step",
+              np.array_equal(fb.read(spec["box"]), board.pack565(strip)[:, t.step: t.step + x1 - x0]))
+        check("about 120 px a second on a 1080p screen", 3 <= t.step <= 5 and t.step * t.FPS >= 90, t.step)
+        frame = np.zeros((1080, 1920), dtype=np.uint16)
+        t.patch(frame)
+        check("a full redraw gets the current window patched in, so it never jumps back",
+              np.array_equal(frame[y0:y1, x0:x1], t.window()) and not np.array_equal(t.window(), start))
+        with t.lock:
+            t.set(dict(spec))
+        check("the same status redrawn keeps its place", t.off == t.step)
+        n = 0
+        while t.off != 0 and n < 10000:
+            t.tick()
+            n += 1
+        check("one pass comes round to the start and rests there",
+              t.off == 0 and np.array_equal(fb.read(spec["box"]), start) and not t.tick(), n)
+        clock[0] += board.Ticker.PAUSE + 0.01
+        t.tick()
+        other = dict(spec, key=("Minor Delays", "something else"))
+        with t.lock:
+            t.set(other)
+        check("a different status starts over, at rest", t.off == 0 and not t.tick())
+        with t.lock:
+            t.set({})
+        clock[0] += 60
+        check("nothing to scroll: the ticker writes nothing", not t.tick())
+
+        # show() with the patch: the frame on the screen has the window in it
+        real = object.__new__(board.Framebuffer)
+        real.f, real.bpp, real.w, real.h, real.stride, real.row = fb.f, 16, 1920, 1080, 3840, 3840
+        with t.lock:
+            t.set(spec)
+        clock[0] += board.Ticker.PAUSE + 0.01
+        for _ in range(5):
+            t.tick()
+        real.show(img, patch=t.patch)
+        check("show() writes the frame with the ticker's window in place",
+              np.array_equal(fb.read(spec["box"]), t.window())
+              and np.array_equal(fb.read((0, 0, 200, 50)), board.pack565(img.crop((0, 0, 200, 50)))))
+        fb.f.close()
+    finally:
+        board.time = saved
+
+
 if __name__ == "__main__":
     test_views()
     test_rail_board()
     test_fetch_and_render()
+    test_ticker()
     test_loop()
     test_outage()
     test_wifi()

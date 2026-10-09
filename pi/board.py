@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse as up
 import datetime as dt
@@ -726,16 +727,28 @@ def paste_roundel(img, cx, cy, r, bar_colour, scale=3, label=""):
 
 
 def render(W, H, settings, cols, status_text, status_ok, status_why, now, updated, live,
-           rotation=None, diag=None, address=None, ss=2):
+           rotation=None, diag=None, address=None, ss=2, ticker=None):
     """Draw the board. Everything is a fraction of the width, so the whole frame
     is drawn at `ss` times size and box-reduced back down. PIL draws hard-edged
     shapes; a 2x reduction is an exact 2x2 average, which is real antialiasing
     for every circle and diagonal on the screen, not just the ones we remembered.
-    ss=1 skips it, for a slow machine."""
+    ss=1 skips it, for a slow machine.
+
+    `ticker`, a dict, asks for a status line too long for its space to be handed
+    back for scrolling instead of cut: render fills in "box" (where it sits on the
+    screen), "strip" (one full pass of it, as an image the box's height) and "key"
+    (what it says). The frame then carries the start of the strip, so the ticker's
+    first window and the frame are the same pixels. Without it the line is cut
+    with an ellipsis, as a still image (--png) needs."""
     if ss > 1:
+        inner = {"align": ss} if ticker is not None else None
         big = render(W * ss, H * ss, settings, cols, status_text, status_ok,
                      status_why, now, updated, live, rotation=rotation, diag=diag,
-                     address=address, ss=1)
+                     address=address, ss=1, ticker=inner)
+        if inner and inner.get("strip") is not None:
+            x0, y0, x1, y1 = inner["box"]
+            ticker.update(box=(x0 // ss, y0 // ss, x1 // ss, y1 // ss),
+                          strip=inner["strip"].reduce(ss), key=inner["key"])
         return big.reduce(ss)
     u = W / 100.0
     img = Image.new("RGB", (W, H), BG)
@@ -837,23 +850,46 @@ def render(W, H, settings, cols, status_text, status_ok, status_why, now, update
         # The tick and the bang are drawn, not typed: a font without the glyph
         # would put an empty box on the wall and nobody would know why.
         r = 1.25 * u
-        cy = fy
-        d.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, round(0.17 * u)))
-        if good:
-            d.line([(x + 0.52 * r, cy + 0.05 * r), (x + 0.88 * r, cy + 0.55 * r),
-                    (x + 1.5 * r, cy - 0.52 * r)], fill=col, width=max(1, round(0.19 * u)),
-                   joint="curve")
+        fbold = font("bold", 1.9 * u)
+
+        def status_line(dd, x, cy, room=None):
+            """The mark, the status and the reason after it, from x. With room, the
+            reason is cut to end there; without, the whole line is drawn."""
+            dd.ellipse([x, cy - r, x + 2 * r, cy + r], outline=col, width=max(1, round(0.17 * u)))
+            if good:
+                dd.line([(x + 0.52 * r, cy + 0.05 * r), (x + 0.88 * r, cy + 0.55 * r),
+                         (x + 1.5 * r, cy - 0.52 * r)], fill=col, width=max(1, round(0.19 * u)),
+                        joint="curve")
+            else:
+                dd.line([(x + r, cy - 0.52 * r), (x + r, cy + 0.12 * r)], fill=col, width=max(1, round(0.19 * u)))
+                dd.ellipse([x + r - 0.11 * u, cy + 0.42 * r, x + r + 0.11 * u, cy + 0.42 * r + 0.22 * u], fill=col)
+            x2 = x + 2 * r + 0.7 * u
+            dd.text((x2, cy), status_text, font=fbold, fill=col, anchor="lm")
+            # why, in the reader's own words
+            if status_why:
+                x2 += text_w(dd, status_text, fbold) + 0.7 * u
+                why = "- " + status_why if room is None else clip(dd, "- " + status_why, fs, room - x2)
+                if why and why != "-...":
+                    dd.text((x2, cy), why, font=fs, fill=DIM, anchor="lm")
+
+        whole = 2 * r + 0.7 * u + text_w(d, status_text, fbold) + (
+            0.7 * u + text_w(d, "- " + status_why, fs) if status_why else 0)
+        if ticker is not None and status_why and x + whole > right_edge:
+            # Too long for the line: hand it to the ticker whole, rather than cut it.
+            # Every edge is on a multiple of the supersampling factor, so the strip,
+            # reduced on its own, is the same pixels as the frame reduced around it.
+            a = ticker.get("align", 1)
+            bx0, bx1 = int((x - 0.4 * u) // a * a), int(right_edge // a * a)
+            by0, by1 = int((fy - 1.7 * u) // a * a), int(-(-(fy + 1.7 * u) // a) * a)
+            lead = x - bx0
+            # one pass: the line, then a gap the width of a few words before it comes round
+            period = int(-(-(lead + whole + 6.0 * u) // a) * a)
+            strip = Image.new("RGB", (period, by1 - by0), BG)
+            status_line(ImageDraw.Draw(strip), lead, fy - by0)
+            img.paste(strip.crop((0, 0, bx1 - bx0, by1 - by0)), (bx0, by0))
+            ticker.update(box=(bx0, by0, bx1, by1), strip=strip, key=(status_text, status_why))
         else:
-            d.line([(x + r, cy - 0.52 * r), (x + r, cy + 0.12 * r)], fill=col, width=max(1, round(0.19 * u)))
-            d.ellipse([x + r - 0.11 * u, cy + 0.42 * r, x + r + 0.11 * u, cy + 0.42 * r + 0.22 * u], fill=col)
-        x2 = x + 2 * r + 0.7 * u
-        d.text((x2, fy), status_text, font=font("bold", 1.9 * u), fill=col, anchor="lm")
-        # why, in the reader's own words, trimmed to what fits on the line
-        if status_why:
-            x2 += text_w(d, status_text, font("bold", 1.9 * u)) + 0.7 * u
-            why = clip(d, "- " + status_why, fs, right_edge - x2)
-            if why and why != "-...":
-                d.text((x2, fy), why, font=fs, fill=DIM, anchor="lm")
+            status_line(d, x, fy, room=right_edge)
 
     # --- two columns
     top = rule_y + 1.8 * u
@@ -1021,25 +1057,120 @@ class Framebuffer:
                                    "(or set framebuffer_depth=32 in config.txt)")
         print(f"framebuffer {w}x{h} {self.bpp}bpp stride {self.stride}", flush=True)
 
-    def _pack(self, img):
+    def _pack(self, img, patch=None):
         if self.bpp == 32:
             return img.convert("RGBA").tobytes("raw", "BGRA")
         # 16bpp: RGB565, little endian. This is not a rare fallback - the vc4
         # driver's framebuffer emulation picks 16-bit on a Pi 3, and neither
         # config.txt nor a -32 on the video= line overrides it. Verified on the
         # real board 2026-09-14: 1920x1080 at 16bpp. So this is THE path here.
-        import numpy as np
-        a = np.asarray(img.convert("RGB"), dtype=np.uint16)
-        v = ((a[:, :, 0] >> 3) << 11) | ((a[:, :, 1] >> 2) << 5) | (a[:, :, 2] >> 3)
+        v = pack565(img)
+        if patch:
+            patch(v)        # the ticker's current window, so a redraw never jumps it back
         return v.astype("<u2").tobytes()
 
-    def show(self, img):
-        raw = self._pack(img)
+    def show(self, img, patch=None):
+        raw = self._pack(img, patch)
         if self.stride != self.row:  # pad each line out to the stride
             pad = b"\0" * (self.stride - self.row)
             raw = b"".join(raw[i:i + self.row] + pad for i in range(0, len(raw), self.row))
         self.f.seek(0)
         self.f.write(raw)
+
+    def write_box(self, box, v):
+        """One rectangle of RGB565 straight onto the screen, a row at a time. pwrite
+        leaves the file position alone, so it cannot upset show()."""
+        x0, y0, x1, y1 = box
+        raw = v.astype("<u2").tobytes()
+        n = (x1 - x0) * 2
+        fd = self.f.fileno()
+        for i in range(y1 - y0):
+            os.pwrite(fd, raw[i * n:(i + 1) * n], (y0 + i) * self.stride + x0 * 2)
+
+
+def pack565(img):
+    """An image as RGB565 values, one uint16 per pixel, (height, width)."""
+    import numpy as np
+    a = np.asarray(img.convert("RGB"), dtype=np.uint16)
+    return ((a[:, :, 0] >> 3) << 11) | ((a[:, :, 1] >> 2) << 5) | (a[:, :, 2] >> 3)
+
+
+class Ticker:
+    """Slides a status line that is too long for its space, the way the dot-matrix
+    boards on a platform do. TfL's reasons run to 200 characters and the line
+    holds about 60, so cutting them lost the part that says what to do.
+
+    Only the status box is redrawn, 30 times a second, from a strip made once per
+    status: a slice and a few row writes, a few per cent of one core on a Pi 3.
+    The 305 ms full frame could never move this smoothly, and does not try. The
+    line rests for PAUSE seconds with its start in place, slides left one pass,
+    and comes round to rest again. A new status, or another board, starts over.
+
+    Everything touching the screen happens under `lock`; the main loop holds it
+    from set() to the end of show(), so a redraw and a slide never interleave."""
+    FPS = 30
+    PAUSE = 3.0
+
+    def __init__(self, fb, u):
+        self.fb = fb
+        self.lock = threading.Lock()
+        self.step = max(1, round(6.0 * u / self.FPS))    # about 6% of the width a second
+        self.spec = None
+        self.key = None
+        self.off = 0
+        self.rest_until = 0.0
+        self.failed = False
+
+    def set(self, spec):
+        """What render() handed back for the frame about to be shown. Lock held."""
+        if not spec or spec.get("strip") is None:
+            self.spec = self.key = None
+            return
+        import numpy as np
+        one = pack565(spec["strip"])
+        period = one.shape[1]
+        w = spec["box"][2] - spec["box"][0]
+        reps = 2 + w // max(1, period)
+        if spec["key"] != self.key:
+            self.key, self.off = spec["key"], 0
+            self.rest_until = time.monotonic() + self.PAUSE
+        self.off %= period
+        self.spec = (spec["box"], np.concatenate([one] * reps, axis=1), period)
+
+    def window(self):
+        box, tiled, _ = self.spec
+        return tiled[:, self.off:self.off + box[2] - box[0]]
+
+    def patch(self, v):
+        """Put the current window into a frame before it is written. Lock held."""
+        if self.spec:
+            x0, y0, x1, y1 = self.spec[0]
+            v[y0:y1, x0:x1] = self.window()
+
+    def tick(self):
+        """One step. Lock held. True if the screen was written."""
+        if not self.spec or time.monotonic() < self.rest_until:
+            return False
+        self.off += self.step
+        if self.off >= self.spec[2]:
+            # round to the start, which is where it rests
+            self.off = 0
+            self.rest_until = time.monotonic() + self.PAUSE
+        self.fb.write_box(self.spec[0], self.window())
+        return True
+
+    def run(self):
+        while True:
+            time.sleep(1.0 / self.FPS)
+            with self.lock:
+                try:
+                    self.tick()
+                except Exception as e:          # noqa: BLE001
+                    # a ticker that cannot write leaves the line where it is, cut off
+                    # but readable; the board itself carries on
+                    if not self.failed:
+                        print("ticker failed:", e, file=sys.stderr, flush=True)
+                    self.failed, self.spec, self.key = True, None, None
 
 
 # ---------------------------------------------------------------- main
@@ -1095,6 +1226,10 @@ def main():
         return
 
     fb = Framebuffer()
+    ticker = None
+    if getattr(fb, "bpp", 0) == 16 and hasattr(fb, "write_box"):
+        ticker = Ticker(fb, fb.w / 100.0)
+        threading.Thread(target=ticker.run, name="ticker", daemon=True).start()
 
     def nudge_screen(force):
         # screen.py promises never to raise, but it reads brightness values that a
@@ -1181,9 +1316,11 @@ def main():
             # hotspot first on every boot and only then joins the known network, and a
             # passer-by should not read setup instructions after every power cut.
             setup = net["state"] == "CONNECTING" or (net["state"] == "HOTSPOT" and up >= 60)
+            spec = {} if ticker else None
             if setup and not b["live"]:
                 frame = render_setup(fb.w, fb.h, net["state"], net["ssid"], hotspot, now,
                                      password=password)
+                spec = None
             else:
                 if netdiag and up < 180 and time.monotonic() - addr["checked"] >= 20:
                     addr["checked"] = time.monotonic()
@@ -1193,8 +1330,13 @@ def main():
                 frame = render(fb.w, fb.h, v, b["cols"], b["status"], b["status_ok"],
                                b["status_why"], now, b["updated"], b["live"],
                                rotation=rotation, diag=diag,
-                               address=addr["value"] if up < 180 else None)
-            fb.show(frame)
+                               address=addr["value"] if up < 180 else None, ticker=spec)
+            if ticker:
+                with ticker.lock:
+                    ticker.set(spec)
+                    fb.show(frame, patch=ticker.patch)
+            else:
+                fb.show(frame)
             draw_failures = 0
         except Exception as e:
             draw_failures += 1
