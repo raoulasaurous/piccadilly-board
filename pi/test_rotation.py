@@ -699,21 +699,13 @@ def test_wifi():
                        "Good Service", True, "", at, at, True, ss=1)
     check("a long destination is clipped rather than run into the minutes", img.size == (960, 540))
     d = board.ImageDraw.Draw(img)
-    # the heading's "towards" stops at the column edge, in whichever font this machine has
+    # the heading is the direction alone: no "towards", however long or short
     far = "Heathrow Terminals 2 & 3 via Hounslow West, Hatton Cross and the long way round"
-    wide = board.render(1920, 1080, v[0], [{"label": "NORTHBOUND", "towards": far, "rows": rows}] * 2,
-                        "Good Service", True, "", at, at, True, ss=1)
-    u, pad = 1920 / 100.0, 2.5 * 1920 / 100.0
-    band = wide.crop((int(1920 - pad) + 2, int(10 * u), 1920, int(16 * u)))
-    colours = {c for _, c in band.getcolors(maxcolors=1 << 16)}
-    check("a long 'towards' stays inside the screen", colours == {board.BG}, colours - {board.BG})
-    ft = board.font("light", 1.7 * u)
-    check("and is cut with an ellipsis, not dropped, when part of it fits",
-          board.towards_text(d, far, ft, 400).startswith("towards Heathrow")
-          and board.towards_text(d, far, ft, 400).endswith("...")
-          and d.textlength(board.towards_text(d, far, ft, 400), font=ft) <= 400)
-    check("a short one is left whole", board.towards_text(d, "Brixton", ft, 400) == "towards Brixton")
-    check("'towards...' on its own is not drawn", board.towards_text(d, far, ft, d.textlength("towards...", font=ft) + 1) == "")
+    with_tow = board.render(1920, 1080, v[0], [{"label": "NORTHBOUND", "towards": far, "rows": rows}] * 2,
+                            "Good Service", True, "", at, at, True, ss=1)
+    without = board.render(1920, 1080, v[0], [{"label": "NORTHBOUND", "towards": "", "rows": rows}] * 2,
+                           "Good Service", True, "", at, at, True, ss=1)
+    check("the column heading draws no 'towards' text", with_tow.tobytes() == without.tobytes())
     check("clip never leaves four dots",
           board.clip(d, "No service between Hyde Park Corner and Acton Town. More words here to make it long.",
                      board.font("regular", 18), 300).count("....") == 0)
