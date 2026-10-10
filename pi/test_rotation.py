@@ -1475,6 +1475,18 @@ def test_handover_check():
             f.write("# nothing here\n\n")
         out, lines = run(wifi=())
         check("a key file with only comments has no key", "no key is authorised" in hc_find(lines, "SSH:"))
+        # Raoul decided on 10 Oct to keep his Mac's key: that one alone is OK, another is still a decision
+        with open(keys, "w") as f:
+            f.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExample tubeboard@Raouls-Laptop\n")
+        out, lines = run(wifi=())
+        ssh = hc_find(lines, "SSH:")
+        check("Raoul's Mac key alone: OK, kept on purpose, and the recipient to be told",
+              ssh.startswith("OK") and "kept on purpose" in ssh and "AAAA" not in ssh, ssh)
+        with open(keys, "a") as f:
+            f.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherOtherOtherOtherOtherOtherOther someone@else\n")
+        out, lines = run(wifi=())
+        check("with a key nobody decided on, it is still a decision",
+              hc_find(lines, "SSH:").startswith("TO DO") and "someone@else" in hc_find(lines, "SSH:"))
 
         # --- the commands are not there, or do not answer
         os.remove(keys)

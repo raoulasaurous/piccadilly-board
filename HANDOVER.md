@@ -31,11 +31,11 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | The Pi itself | Plugged in at Raoul's; online on 10 Oct. `throttled=0x0`. Its health file (`/run/tubeboard/health.json`) said 3 of 3 boards fetched, no failed draws, after the 10 Oct install. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
-| Tested | 397 offline checks (`pi/test_rotation.py`, the updater's and the hand-over check's included), 44 in headless Chrome (`test_index.py`). Every 9-10 Oct change reviewed by an independent reviewer, each finding verified, the confirmed ones fixed. Seen on the real screen 10 Oct: the rotation, the coloured dots, four rows, the scroll, the rail board's notice. |
+| Tested | 399 offline checks (`pi/test_rotation.py`, the updater's and the hand-over check's included), 44 in headless Chrome (`test_index.py`). Every 9-10 Oct change reviewed by an independent reviewer, each finding verified, the confirmed ones fixed. Seen on the real screen 10 Oct: the rotation, the coloured dots, four rows, the scroll, the rail board's notice. |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
-| WiFi hand-over flow | **10 Oct, Raoul: the settings QR code scans and the settings page works from a phone.** The setup screen (the hotspot's join QR) draws on the Pi with the real name (9 Oct) but has not been tried on a phone: it only shows with no WiFi, so that is hand-over step 1. `sudo python3 /opt/tubeboard/portal.py --handover-check` on 10 Oct: 2 saved WiFi networks, console password last changed June (reset needed), Pi Connect signed in, 1 SSH key, hotspot name right, rail key saved, updater on. |
+| WiFi hand-over flow | **10 Oct, Raoul: the settings QR code scans and the settings page works from a phone.** The setup screen (the hotspot's join QR) draws on the Pi with the real name (9 Oct) but has not been tried on a phone: it only shows with no WiFi, so that is hand-over step 1. `sudo python3 /opt/tubeboard/portal.py --handover-check` on 10 Oct: 2 saved WiFi networks, console password last changed June (reset needed), Pi Connect signed in, 1 SSH key (Raoul's, kept), hotspot name right, rail key saved, updater on. |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
 | Frame and mount | Not ordered yet. **To order: 408 x 257 frame, 31 mm white mount, opening 346 x 195** (right-angle plugs reach 23 mm out of the short edge; Raoul 10 Oct). See "Physical build". |
 
@@ -633,8 +633,10 @@ cuts the connection the check runs over.
    **TubeBoard-setup**, the QR, or the WIFI OK screen.
 2. Reset the console password (required, see "The Pi").
 3. Tell the recipient plainly that Raoul can log in remotely (Pi Connect), and
-   that the board updates itself overnight from GitHub. Decide whether Raoul's SSH
-   key stays. Claude recommended keeping both, and saying so.
+   that the board updates itself overnight from GitHub. **Raoul's SSH key stays**
+   (Raoul, 10 Oct): it only works from the board's own WiFi, and Pi Connect is the
+   remote way in. The hand-over check reports it as OK, kept on purpose
+   (`KEPT_SSH_KEYS` in `portal.py`).
 4. **Forget the WiFi, last,** from the settings page or `sudo python3 portal.py
    --forget-wifi`. Otherwise the board carries this house's password, and never
    raises the setup hotspot at theirs.

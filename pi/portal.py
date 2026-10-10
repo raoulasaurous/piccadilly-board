@@ -997,6 +997,12 @@ def key_comment(line):
     return None
 
 
+# Keys the owner has decided stay on the board, by their comment. Raoul's Mac key
+# stays (Raoul, 10 Oct 2026): it only works from the board's own WiFi, it is how
+# a session on his Mac deploys and checks, and the recipient is to be told.
+KEPT_SSH_KEYS = ("tubeboard@Raouls-Laptop",)
+
+
 def check_ssh(user):
     name, _, home = user
     path = os.path.join(home, ".ssh", "authorized_keys")
@@ -1019,6 +1025,9 @@ def check_ssh(user):
             c = re.sub(r"[A-Za-z0-9+/=_-]{40,}", "?", c)
         comments.append("unreadable line" if c is None else (_plain(c, 60) if c else "no comment"))
     more = f", and {len(lines) - 10} more" if len(lines) > 10 else ""
+    if len(lines) <= 10 and comments and all(c in KEPT_SSH_KEYS for c in comments):
+        return _ok(f"SSH: {len(lines)} key{'' if len(lines) == 1 else 's'} can log in as {name} "
+                   f"(comments: {', '.join(comments)}), kept on purpose. The recipient must be told.")
     return _todo(f"SSH: {len(lines)} key{'' if len(lines) == 1 else 's'} can log in as {name} "
                  f"(comments: {', '.join(comments)}{more}). Decide whether Raoul's key stays.", step)
 
