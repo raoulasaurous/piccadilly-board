@@ -14,7 +14,7 @@ Measured or published, and used as such: the moulding (EasyFrame 364453492's
 profile drawing: 20 mm face, 45 mm deep, 40 mm rebate, 6 mm lip), the mount board
 (1.5 mm), the opening (346 x 195, 1 mm over the lit area), the monitor's
 thickness (12 mm at the socket edge, 7 mm elsewhere, Raoul 7 Oct), the plug reach
-(40 mm, Raoul 10 Oct), the panel's lit area (344 x 194, a 15.6" 16:9 panel) and its
+(30 mm with right-angle connectors, Raoul 10 Oct; 40 mm straight), the panel's lit area (344 x 194, a 15.6" 16:9 panel) and its
 body (368 x 225, the Amazon listing). Assumed until measured: how the bezel splits
 round the picture (12 mm each side, 7 at the top, 24 at the bottom) and the spine's
 width (30 mm).
@@ -143,15 +143,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="ctl"><label for="r">Plug reach past the monitor's edge <output id="r-o"></output></label><input id="r" type="range" min="15" max="50" step="0.5"></div>
     <div class="ctl"><label for="z">Bezel on the plug side <output id="z-o"></output></label><input id="z" type="range" min="4" max="20" step="0.5"></div>
     <div class="presets">
-      <button class="chip" id="p-order">Your order</button>
-      <button class="chip" id="p-min">Slimmest, straight plugs</button>
-      <button class="chip" id="p-ra">Slimmest, 25&nbsp;mm right-angle plug</button>
+      <button class="chip" id="p-order">Your order now (55&nbsp;mm)</button>
+      <button class="chip" id="p-min">Slimmest</button>
+      <button class="chip" id="p-ra">Slimmest + 2&nbsp;mm spare</button>
     </div>
     <p class="sum" id="sum"></p>
     <ul class="legend" id="legend"></ul>
   </aside>
 </div>
-<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 40&nbsp;mm plug reach. <b>Assumed until you measure:</b> how the black bezel splits round the picture (12&nbsp;mm each side from the listing's 368&nbsp;mm width), so measure the plug-side bezel and set it with the slider.</p>
+<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 30&nbsp;mm plug reach with the right-angle connectors. <b>Assumed until you measure:</b> how the black bezel splits round the picture (12&nbsp;mm each side from the listing's 368&nbsp;mm width), so measure the plug-side bezel and set it with the slider.</p>
 </div>
 <script>
 const SLED=__SLED__, PI=__PI__;
@@ -163,14 +163,14 @@ const BEZ_TOP=7;               // assumed: the rest of the 31 mm goes to the chi
 const THIN=7, SPINE=12, SPINE_W=30, MOUNT_T=1.5, BACK_T=3;
 const FACE=20, LIP=6, DEPTH=45, REBATE=40;
 const SLED_H=14.9;             // sled, Pi and its GPIO header
-const PRESET={order:{b:55,r:40,z:12}, min:{b:53,r:40,z:12}, ra:{b:38,r:25,z:12}};
+const PRESET={order:{b:55,r:30,z:12}};
 let P={...PRESET.order};
-const MAT={frame:'#5A3A26',mount:'#EFE8D8',body:'#212328',screen:'#0B1424',foam:'#F5F7F8',
+const MAT={frame:'#5A3A26',mount:'#FBFBF9',body:'#212328',screen:'#0B1424',foam:'#F5F7F8',
   backing:'#B48858',brass:'#C9A24A',sled:'#2E3136',pcb:'#1E7A3C',plug:'#141414',cable:'#1A1A1A',
   cork:'#B78A5C',pic:'#0019A8',row:'#E9EBEE',min:'#F5A623'};
 const PARTS=[
  {id:'frame',name:'Frame',mat:'frame',layer:0,desc:'20 mm brown stain, 45 mm deep, 40 mm rebate, 6 mm lip'},
- {id:'mount',name:'Mount',mat:'mount',layer:1,desc:'1.5 mm board, presses on the back of the lip'},
+ {id:'mount',name:'Mount',mat:'mount',layer:1,desc:'white, 1.5 mm board, presses on the back of the lip'},
  {id:'monitor',name:'Monitor',mat:'body',layer:2,desc:'face down on the mount, 7 mm thick, 12 mm at the socket edge'},
  {id:'plugs',name:'Plugs and leads',mat:'plug',layer:2,desc:'mini-HDMI and USB-C out of the right-hand edge'},
  {id:'foam',name:'Foam board',mat:'foam',layer:3,desc:'two layers of 5 mm round the monitor, so the backing presses flat'},
@@ -369,8 +369,8 @@ function update(){
 }
 for(const [id,key] of [['b','b'],['r','r'],['z','z']])$(id).addEventListener('input',e=>{P[key]=+e.target.value;update()});
 $('p-order').onclick=()=>{P={...PRESET.order};update()};
-$('p-min').onclick=()=>{P={...P,r:40};P.b=P.z-1+P.r+2;update()};
-$('p-ra').onclick=()=>{P={...P,r:25};P.b=P.z-1+P.r+2;update()};
+$('p-min').onclick=()=>{P.b=P.z-1+P.r+2;update()};
+$('p-ra').onclick=()=>{P.b=P.z-1+P.r+4;update()};
 $('cut').onclick=e=>{cut=!cut;e.currentTarget.setAttribute('aria-pressed',cut);update();
   if(cut){[yaw,pitch]=VIEWS.top;setView('top')}};
 $('ex').addEventListener('input',e=>{explode=+e.target.value;dirty=true;rebuild=true});

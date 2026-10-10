@@ -37,7 +37,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
 | WiFi hand-over flow | The setup screen draws on the Pi with the real name and a QR (9 Oct, `--png --setup`). Still unseen on a phone. |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
-| Frame and mount | Measured 7 Oct. **Waiting on a right-angle connector** (Raoul, 10 Oct): the frame and mount are ordered after it arrives and the leads are tried with it. See "Physical build". |
+| Frame and mount | Not ordered yet. With the right-angle connectors (10 Oct) the plugs reach 30 mm, so the border can be 43-45 mm instead of 55: see "Physical build". Mount white, not off white (Raoul, 10 Oct). |
 
 ## Start here, on the Mac
 
@@ -495,8 +495,8 @@ In rough order:
    `Cancelled` in its place instead of vanishing, and the feed's notices are the
    status when TfL says Good Service (see "National Rail boards"). Raoul may want
    the cancelled row struck through or dimmed as well.
-5. The physical build (below). The frame and mount are ordered once the
-   right-angle connector Raoul is waiting for (10 Oct) has arrived.
+5. The physical build (below): measure the plug-side bezel, then order the frame
+   and mount at the size that gives (43-45 mm border).
 
 ## Physical build
 
@@ -533,7 +533,14 @@ which takes 10 mm off the width and height and adds no depth.
   about GBP 40 at 457 x 305 with no glazing. Fits every Pi position. Raoul built
   this order on the site: 456 x 305, mount opening 346 x 195 (55 mm borders),
   Off White mount, No Glazing, MDF backing and D-rings, 5 mm white foam board
-  and 9 mm foam tape, GBP 48.71.
+  and 9 mm foam tape, GBP 48.71. **Superseded 10 Oct:** the right-angle
+  connectors bring the plugs to 30 mm past the monitor's edge, and Raoul wants
+  the mount white. The border on the plug side must hold the bezel less the
+  opening's 1 mm overlap, the plugs and a clearance: 12 - 1 + 30 + 2 = **43 mm**
+  (frame 432 x 281, 37 mm of white showing, 460 x 309 outside), or 45 mm with
+  2 mm more to spare (436 x 285, 39 mm white, 464 x 313 outside). The 12 mm
+  bezel is the listing's width spread evenly, not measured: measure it first.
+  `case/frame_viewer.py` works these out for any numbers.
 - EasyFrame 40 mm Walnut Stain, code 311493492, 27 mm rebate, GBP 79.73 as
   configured: fits **only** with the Pi on the monitor's back; 80 mm larger
   outside.
