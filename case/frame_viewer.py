@@ -45,7 +45,7 @@ PAGE = r'''<title>Tube Board Frame</title>
 :root{
   --bg:#ECEFF2; --surface:#FFFFFF; --ink:#1B2129; --muted:#5A6471; --line:#D3D9E0;
   --accent:#0019A8; --accent-ink:#FFFFFF; --vp:#DDE2E7;
-  --ok:#1E7B47; --warn:#9A6200; --bad:#B3261E;
+  --ok:#1E7B47; --warn:#9A6200; --bad:#B3261E; --seg-edge:#2B2E34; --seg-ink:#FFFFFF;
   --display:"Hammersmith One","Gill Sans","Trebuchet MS",sans-serif;
   --body:"Work Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
@@ -53,11 +53,11 @@ PAGE = r'''<title>Tube Board Frame</title>
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#12161B; --surface:#1A2027; --ink:#E6EAEE; --muted:#97A1AD; --line:#2B333C;
   --accent:#7D91FF; --accent-ink:#0B0F14; --vp:#0D1115;
-  --ok:#5FC08A; --warn:#E3A93B; --bad:#F2867D; color-scheme:dark}}
+  --ok:#5FC08A; --warn:#E3A93B; --bad:#F2867D; --seg-edge:#4A515C; --seg-ink:#FFFFFF; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#12161B; --surface:#1A2027; --ink:#E6EAEE; --muted:#97A1AD; --line:#2B333C;
   --accent:#7D91FF; --accent-ink:#0B0F14; --vp:#0D1115;
-  --ok:#5FC08A; --warn:#E3A93B; --bad:#F2867D; color-scheme:dark}
+  --ok:#5FC08A; --warn:#E3A93B; --bad:#F2867D; --seg-edge:#4A515C; --seg-ink:#FFFFFF; color-scheme:dark}
 *{box-sizing:border-box}
 html,body{background:var(--bg);color:var(--ink)}
 body{font:15px/1.5 var(--body);padding-inline:16px;padding-block:18px 40px}
@@ -97,6 +97,15 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 input[type=range]{width:100%;accent-color:var(--accent)}
 .presets{display:flex;flex-wrap:wrap;gap:6px}
 .sum{font-size:13.5px;color:var(--muted);margin:0}
+.card h3{font:600 12px/1.2 var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
+.group{display:grid;gap:8px}
+.split{display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+.split span{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;white-space:nowrap;
+  font:500 12px var(--mono);color:var(--seg-ink);font-variant-numeric:tabular-nums}
+.split .edge{background:var(--seg-edge)} .split .plug{background:var(--accent);color:var(--accent-ink)}
+.split .spare{background:var(--ok)} .split .spare.short{background:var(--bad)}
+.keys{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--muted)}
+.keys i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .sum code{font:500 13px var(--mono);color:var(--ink)}
 .legend{display:grid;gap:6px;margin:0;padding:0;list-style:none}
 .legend button{display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;align-items:start;width:100%;
@@ -134,10 +143,21 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="order">
       <div class="row big"><span class="k">Frame size to type in (EasyFrame)</span><span class="v" id="o-frame"></span></div>
       <div class="row"><span class="k">Mount: outside / opening</span><span class="v" id="o-mount"></span></div>
-      <div class="row"><span class="k">Mount border, each side</span><span class="v" id="o-border"></span></div>
-      <div class="row"><span class="k">White you see (6&nbsp;mm under the lip)</span><span class="v" id="o-white"></span></div>
-      <div class="row"><span class="k">Outside of the frame</span><span class="v" id="o-outside"></span></div>
+      <div class="row"><span class="k">Mount border, each side, white</span><span class="v" id="o-border"></span></div>
       <div class="row"><span class="k">Depth used of the 40&nbsp;mm rebate</span><span class="v" id="o-depth"></span></div>
+    </div>
+    <div class="group">
+      <h3>From the front</h3>
+      <div class="row"><span class="k">The picture, through the opening</span><span class="v" id="f-pic"></span></div>
+      <div class="row big"><span class="k">White mount you see, each side</span><span class="v" id="o-white"></span></div>
+      <div class="row"><span class="k">Window the frame's lip leaves</span><span class="v" id="f-sight"></span></div>
+      <div class="row"><span class="k">Wood face, each side</span><span class="v">20 mm</span></div>
+      <div class="row"><span class="k">Outside of the frame</span><span class="v" id="o-outside"></span></div>
+    </div>
+    <div class="group">
+      <h3 id="split-h">The border on the plug side</h3>
+      <div class="split" id="split" role="img" aria-label=""><span class="edge" id="s-edge"></span><span class="plug" id="s-plug"></span><span class="spare" id="s-spare"></span></div>
+      <div class="keys"><span><i style="background:var(--seg-edge)"></i>black edge behind the mount</span><span><i style="background:var(--accent)"></i>plugs</span><span><i style="background:var(--ok)"></i>spare</span></div>
     </div>
     <div class="state" id="state"><span class="dot"></span><span id="state-t"></span></div>
     <div class="ctl"><label for="b">Mount border <output id="b-o"></output></label><input id="b" type="range" min="30" max="70" step="0.5"></div>
@@ -356,6 +376,16 @@ function update(){
   $('o-mount').textContent=`${f1(W)} \u00d7 ${f1(H)} / ${OPEN[0]} \u00d7 ${OPEN[1]}`;
   $('o-border').textContent=`${f1(P.b)} mm`;
   $('o-white').textContent=`${f1(P.b-LIP)} mm`;
+  $('f-pic').textContent=`${OPEN[0]} \u00d7 ${OPEN[1]} mm`;
+  $('f-sight').textContent=`${f1(W-2*LIP)} \u00d7 ${f1(H-2*LIP)} mm`;
+  // the plug side of the border, opening edge to the wood: black edge, plugs, spare
+  const edge=P.z-1,tot=Math.max(P.b,edge+P.r),pc=x=>`${Math.max(0,x)/tot*100}%`;
+  $('split-h').textContent=`The ${f1(P.b)} mm border on the plug side`;
+  $('s-edge').style.width=pc(edge);$('s-edge').textContent=edge>=3?f1(edge):'';
+  $('s-plug').style.width=pc(P.r);$('s-plug').textContent=`${f1(P.r)} plugs`;
+  $('s-spare').style.width=pc(Math.abs(clear));$('s-spare').textContent=Math.abs(clear)>=2.5?f1(Math.abs(clear)):'';
+  $('s-spare').className='spare'+(clear<0?' short':'');
+  $('split').setAttribute('aria-label',`${f1(edge)} mm black edge, ${f1(P.r)} mm plugs, ${clear>=0?f1(clear)+' mm spare':f1(-clear)+' mm too short'}`);
   $('o-outside').textContent=`${f1(W+2*(FACE-LIP))} \u00d7 ${f1(H+2*(FACE-LIP))} mm`;
   const used=MOUNT_T+SPINE+BACK_T+SLED_H;
   $('o-depth').textContent=`${f1(used)} mm`;
