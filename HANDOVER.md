@@ -27,15 +27,15 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Area | State |
 |---|---|
 | `main` | PRs #1-#4, then the 7 Oct rail fixes and the 9 Oct screen changes (below), all pushed. |
-| **What the Pi runs** | **`main` as of 9 Oct** (`git log -1` in `~/piccadilly-board` on the Pi says which commit), installed into `/opt/tubeboard`. Dated backup of the pre-PR-#1 code: `/opt/tubeboard.bak-2026-10-09`. **No self-updater yet**: it arrives with the next deploy by hand (see "Deploying"). |
-| The Pi itself | Plugged in at Raoul's on 9 Oct. It came up after the 6 Oct unplug with no card trouble. `throttled=0x0`, 47 C with the scroll running. |
+| **What the Pi runs** | **`main`, installed 10 Oct evening**, and from then on by the nightly updater (`tubeboard-update.timer`, about 04:00): whatever is merged to `main` is on the wall the next morning. `cat /opt/tubeboard/VERSION` says which commit. Dated backups: `/opt/tubeboard.bak-2026-10-09` (pre-PR-#1), `-10-10`. |
+| The Pi itself | Plugged in at Raoul's; online on 10 Oct. `throttled=0x0`. Its health file (`/run/tubeboard/health.json`) said 3 of 3 boards fetched, no failed draws, after the 10 Oct install. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
-| Tested | 392 offline checks (`pi/test_rotation.py`, the updater's and the hand-over check's included), 44 in headless Chrome (`test_index.py`). Each 9 Oct change reviewed by an independent reviewer, each finding verified, some on the Pi, and the confirmed ones fixed. |
+| Tested | 397 offline checks (`pi/test_rotation.py`, the updater's and the hand-over check's included), 44 in headless Chrome (`test_index.py`). Every 9-10 Oct change reviewed by an independent reviewer, each finding verified, the confirmed ones fixed. Seen on the real screen 10 Oct: the rotation, the coloured dots, four rows, the scroll, the rail board's notice. |
 | Power | Settled 17 Sept. Do not re-test. One brick, two cables. |
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
-| WiFi hand-over flow | The setup screen draws on the Pi with the real name and a QR (9 Oct, `--png --setup`). Still unseen on a phone. |
+| WiFi hand-over flow | The setup screen draws on the Pi with the real name and a QR (9 Oct). Still unseen on a phone. `sudo python3 /opt/tubeboard/portal.py --handover-check` on 10 Oct: 2 saved WiFi networks, console password last changed June (reset needed), Pi Connect signed in, 1 SSH key, hotspot name right, rail key saved, updater on. |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
 | Frame and mount | Not ordered yet. **To order: 408 x 257 frame, 31 mm white mount, opening 346 x 195** (right-angle plugs reach 23 mm out of the short edge; Raoul 10 Oct). See "Physical build". |
 
