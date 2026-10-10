@@ -107,13 +107,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .keys{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--muted)}
 .keys i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .sum code{font:500 13px var(--mono);color:var(--ink)}
-.legend{display:grid;gap:6px;margin:0;padding:0;list-style:none}
-.legend button{display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;align-items:start;width:100%;
-  text-align:left;font:inherit;font-size:13.5px;color:inherit;background:none;border:0;border-radius:6px;padding:3px 4px;cursor:pointer}
-.sw{width:14px;height:14px;border-radius:3px;margin-top:3px;border:1px solid rgba(0,0,0,.25)}
-.legend .off{opacity:.38}
-.legend .nm{font-weight:600}
-.legend .ds{color:var(--muted)}
+.left{display:grid;gap:12px;min-width:0}
+.parts{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px 14px 14px;margin:0;min-width:0}
+.parts legend{font:600 12px/1.2 var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:0 6px}
+.phead{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-bottom:8px}
+.plist{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 18px}
+.pitem{display:grid;grid-template-columns:auto 14px minmax(0,1fr);gap:8px;align-items:start;font-size:13.5px;cursor:pointer}
+.pitem input{margin:3px 0 0;width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.sw{width:14px;height:14px;border-radius:3px;margin-top:3px;border:1px solid var(--line)}
+.pitem .nm{font-weight:600}
+.pitem .ds{color:var(--muted);display:block}
+.pitem:has(input:not(:checked)) .nm,.pitem:has(input:not(:checked)) .ds,.pitem:has(input:not(:checked)) .sw{opacity:.4}
 .notes{color:var(--muted);font-size:13.5px;max-width:78ch;margin:0}
 .notes b{color:var(--ink);font-weight:600}
 @media (prefers-reduced-motion: reduce){*{scroll-behavior:auto}}
@@ -124,6 +128,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <p class="lede">The monitor face down behind the mount, in the 20&nbsp;mm brown stain frame, with the Pi on its sled behind the backing board. Drag to turn it, scroll or pinch to zoom.</p>
 </header>
 <div class="main">
+  <div class="left">
   <div class="stage">
     <canvas id="c" aria-label="3D model of the framed board"></canvas>
     <div class="bar">
@@ -137,6 +142,12 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
     <div class="explode"><label for="ex">Pull apart</label><input id="ex" type="range" min="0" max="1" step="0.01" value="0"></div>
     <div class="hint" id="hint">drag to turn &middot; double-click to reset</div>
+  </div>
+  <fieldset class="parts">
+    <legend>Show parts</legend>
+    <div class="phead"><button class="chip" id="all-on" type="button">Show all</button><button class="chip" id="all-off" type="button">Hide all</button></div>
+    <div class="plist" id="plist"></div>
+  </fieldset>
   </div>
   <aside class="card" aria-label="Sizes">
     <h2>What to order</h2>
@@ -169,7 +180,6 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <button class="chip" id="p-first">First plan (55&nbsp;mm)</button>
     </div>
     <p class="sum" id="sum"></p>
-    <ul class="legend" id="legend"></ul>
   </aside>
 </div>
 <p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 30&nbsp;mm plug reach with the right-angle connectors. <b>Measured 10 Oct:</b> the black edge is 5.3&nbsp;mm on the short side and 24&nbsp;mm along the long edge with the strip. The plugs leave by the short edge, so a 39&nbsp;mm border leaves 4.7&nbsp;mm between the plug ends and the wood.</p>
@@ -408,12 +418,13 @@ $('ex').addEventListener('input',e=>{explode=+e.target.value;dirty=true;rebuild=
 function setView(v){[yaw,pitch]=VIEWS[v];zoom=1;dirty=true;
   document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.view===v))}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
-const lg=$('legend');
-for(const p of PARTS){const li=document.createElement('li');li.innerHTML=
-  `<button type="button" aria-pressed="true" id="lg-${p.id}" title="Show or hide"><span class="sw" style="background:${MAT[p.mat]}"></span><span><span class="nm">${p.name}</span><br><span class="ds">${p.desc}</span></span></button>`;
-  lg.appendChild(li);
-  li.querySelector('button').onclick=e=>{const on=hidden.has(p.id);on?hidden.delete(p.id):hidden.add(p.id);
-    e.currentTarget.setAttribute('aria-pressed',on);li.classList.toggle('off',!on);dirty=true;rebuild=true}}
+const pl=$('plist');
+for(const p of PARTS){const lab=document.createElement('label');lab.className='pitem';lab.htmlFor='show-'+p.id;
+  lab.innerHTML=`<input type="checkbox" id="show-${p.id}" checked><span class="sw" style="background:${MAT[p.mat]}"></span><span><span class="nm">${p.name}</span><span class="ds">${p.desc}</span></span>`;
+  pl.appendChild(lab);
+  lab.querySelector('input').addEventListener('change',e=>{e.target.checked?hidden.delete(p.id):hidden.add(p.id);dirty=true;rebuild=true})}
+function showAll(on){for(const p of PARTS){$('show-'+p.id).checked=on;on?hidden.delete(p.id):hidden.add(p.id)}dirty=true;rebuild=true}
+$('all-on').onclick=()=>showAll(true);$('all-off').onclick=()=>showAll(false);
 let px=0,py=0,down=false,pinch=0;
 cv.addEventListener('pointerdown',e=>{down=true;px=e.clientX;py=e.clientY;cv.setPointerCapture(e.pointerId)});
 cv.addEventListener('pointermove',e=>{if(!down)return;yaw-=(e.clientX-px)*.01;pitch+=(e.clientY-py)*.01;
