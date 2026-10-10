@@ -37,7 +37,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
 | WiFi hand-over flow | The setup screen draws on the Pi with the real name and a QR (9 Oct, `--png --setup`). Still unseen on a phone. |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
-| Frame and mount | Measured 7 Oct, order **parked by Raoul**: see "Physical build". |
+| Frame and mount | Measured 7 Oct. **Waiting on a right-angle connector** (Raoul, 10 Oct): the frame and mount are ordered after it arrives and the leads are tried with it. See "Physical build". |
 
 ## Start here, on the Mac
 
@@ -489,7 +489,8 @@ In rough order:
    `Cancelled` in its place instead of vanishing, and the feed's notices are the
    status when TfL says Good Service (see "National Rail boards"). Raoul may want
    the cancelled row struck through or dimmed as well.
-5. The physical build (below). The frame order is parked by Raoul.
+5. The physical build (below). The frame and mount are ordered once the
+   right-angle connector Raoul is waiting for (10 Oct) has arrived.
 
 ## Physical build
 
