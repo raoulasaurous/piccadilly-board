@@ -393,6 +393,12 @@ its reason in the message.
   ellipsis).
 - `case/sled.py` - the Pi mounting sled (manifold3d). `cd case && python3 sled.py`
   rebuilds the three STLs.
+- `case/frame_viewer.py` - the whole assembly in 3D (frame, mount, monitor, foam,
+  backing, the Pi on its sled, leads), with sliders for the mount border, plug
+  reach and bezel that work out the frame and mount sizes to order. `python3
+  frame_viewer.py` writes `frame_viewer.html`; published (private to Raoul) at
+  https://claude.ai/artifact/EqBSAKQrAQdKyse8Q99F97. The bezel split round the
+  picture is assumed from the listing until measured.
 - Artifacts, private to Raoul's claude.ai account (update in place with `url=`):
   the parts page https://claude.ai/code/artifact/b780921a-e621-4f93-a29b-1e38fc4c2e7c
   (**out of date**: its power section shows the one-lead plan that failed) and the
