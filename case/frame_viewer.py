@@ -15,9 +15,10 @@ profile drawing: 20 mm face, 45 mm deep, 40 mm rebate, 6 mm lip), the mount boar
 (1.5 mm), the opening (346 x 195, 1 mm over the lit area), the monitor's
 thickness (12 mm at the socket edge, 7 mm elsewhere, Raoul 7 Oct), the plug reach
 (30 mm with right-angle connectors, Raoul 10 Oct; 40 mm straight), the panel's lit area (344 x 194, a 15.6" 16:9 panel) and its
-body (368 x 225, the Amazon listing). Assumed until measured: how the bezel splits
-round the picture (12 mm each side, 7 at the top, 24 at the bottom) and the spine's
-width (30 mm).
+body. Raoul measured the black edge round the picture on 10 Oct: 5.3 mm on the short
+side and 24.0 mm along the long edge with the strip, so the body is about 355 x 223
+(the listing's 368 was wrong). Assumed: 5.3 at the top as on the sides, the spine's
+width (30 mm), and that the plugs come out of a short edge.
 """
 import json
 import os
@@ -151,19 +152,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <ul class="legend" id="legend"></ul>
   </aside>
 </div>
-<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 30&nbsp;mm plug reach with the right-angle connectors. <b>Assumed until you measure:</b> how the black bezel splits round the picture (12&nbsp;mm each side from the listing's 368&nbsp;mm width), so measure the plug-side bezel and set it with the slider.</p>
+<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 30&nbsp;mm plug reach with the right-angle connectors. <b>Measured 10 Oct:</b> the black edge is 5.3&nbsp;mm on the short side and 24&nbsp;mm along the long edge with the strip. The model has the plugs on a short edge; if they come out of the 24&nbsp;mm edge, set the bezel slider to 24.</p>
 </div>
 <script>
 const SLED=__SLED__, PI=__PI__;
 // ------------------------------------------------------------ the numbers
 const OPEN=[346,195];          // mount opening, 1 mm over the lit area each side
 const LIT=[344.2,193.6];       // the panel's lit area
-const BODY=[368,225];          // the monitor's body (listing)
-const BEZ_TOP=7;               // assumed: the rest of the 31 mm goes to the chin
+const BODY=[354.8,222.9];      // the monitor's body: lit area + 5.3 each side, 5.3 top, 24 chin (measured 10 Oct)
+const BEZ_TOP=5.3;             // measured on the short side, taken as the same at the top; the chin is 24.0
 const THIN=7, SPINE=12, SPINE_W=30, MOUNT_T=1.5, BACK_T=3;
 const FACE=20, LIP=6, DEPTH=45, REBATE=40;
 const SLED_H=14.9;             // sled, Pi and its GPIO header
-const PRESET={order:{b:55,r:30,z:12}};
+const PRESET={order:{b:55,r:30,z:5.3}};
 let P={...PRESET.order};
 const MAT={frame:'#5A3A26',mount:'#FBFBF9',body:'#212328',screen:'#0B1424',foam:'#F5F7F8',
   backing:'#B48858',brass:'#C9A24A',sled:'#2E3136',pcb:'#1E7A3C',plug:'#141414',cable:'#1A1A1A',

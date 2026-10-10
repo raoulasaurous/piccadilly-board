@@ -536,11 +536,14 @@ which takes 10 mm off the width and height and adds no depth.
   and 9 mm foam tape, GBP 48.71. **Superseded 10 Oct:** the right-angle
   connectors bring the plugs to 30 mm past the monitor's edge, and Raoul wants
   the mount white. The border on the plug side must hold the bezel less the
-  opening's 1 mm overlap, the plugs and a clearance: 12 - 1 + 30 + 2 = **43 mm**
-  (frame 432 x 281, 37 mm of white showing, 460 x 309 outside), or 45 mm with
-  2 mm more to spare (436 x 285, 39 mm white, 464 x 313 outside). The 12 mm
-  bezel is the listing's width spread evenly, not measured: measure it first.
-  `case/frame_viewer.py` works these out for any numbers.
+  opening's 1 mm overlap, the plugs and a clearance. Raoul measured the black
+  edge on 10 Oct: **5.3 mm on the short sides, 24.0 mm along the long edge with
+  the strip** (the listing's 368 mm width was wrong; the body is about 355 x 223).
+  Plugs out of a short edge: 5.3 - 1 + 30 + 2 = 36.3, so a **39 mm** border with
+  2 mm spare: frame **424 x 273**, 33 mm of white showing, 452 x 301 outside.
+  Plugs out of the 24 mm edge: 55 mm, the size first ordered. Which edge the
+  plugs leave by was being confirmed with Raoul on 10 Oct. `case/frame_viewer.py`
+  works these out for any numbers.
 - EasyFrame 40 mm Walnut Stain, code 311493492, 27 mm rebate, GBP 79.73 as
   configured: fits **only** with the Pi on the monitor's back; 80 mm larger
   outside.
