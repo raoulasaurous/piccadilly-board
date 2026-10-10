@@ -660,6 +660,10 @@ cuts the connection the check runs over.
   network ("local is fine", the same call as on the ticker); the one destructive
   action, Forget the WiFi, asks for a typed word.
 - Power: see above. Settled.
+- Unplugging without a shutdown is accepted as it is (Raoul, 10 Oct): logs and the
+  health file are in RAM, settings are written whole and renamed, `fsck.repair=yes`
+  mends the card at boot, and the updater recovers an interrupted run. No
+  high-endurance card, spare card, read-only root or UPS HAT (no depth for one).
 
 ## Working with Raoul
 
