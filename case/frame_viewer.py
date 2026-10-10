@@ -14,7 +14,7 @@ Measured or published, and used as such: the moulding (EasyFrame 364453492's
 profile drawing: 20 mm face, 45 mm deep, 40 mm rebate, 6 mm lip), the mount board
 (1.5 mm), the opening (346 x 195, 1 mm over the lit area), the monitor's
 thickness (12 mm at the socket edge, 7 mm elsewhere, Raoul 7 Oct), the plug reach
-(30 mm with right-angle connectors, Raoul 10 Oct; 40 mm straight), the panel's lit area (344 x 194, a 15.6" 16:9 panel) and its
+(23 mm with right-angle connectors, remeasured by Raoul 10 Oct; 40 mm straight), the panel's lit area (344 x 194, a 15.6" 16:9 panel) and its
 body. Raoul measured the black edge round the picture on 10 Oct: 5.3 mm on the short
 side and 24.0 mm along the long edge with the strip, so the body is about 355 x 223
 (the listing's 368 was wrong). Assumed: 5.3 at the top as on the sides, the spine's
@@ -154,7 +154,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="order">
       <div class="row big"><span class="k">Frame size to type in (EasyFrame)</span><span class="v" id="o-frame"></span></div>
       <div class="row"><span class="k">Mount: outside / opening</span><span class="v" id="o-mount"></span></div>
-      <div class="row"><span class="k">Mount border, each side, white</span><span class="v" id="o-border"></span></div>
+      <div class="row"><span class="k">Mount border, each side, white (follows the plugs)</span><span class="v" id="o-border"></span></div>
       <div class="row"><span class="k">Depth used of the 40&nbsp;mm rebate</span><span class="v" id="o-depth"></span></div>
     </div>
     <div class="group">
@@ -171,18 +171,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="keys"><span><i style="background:var(--seg-edge)"></i>black edge behind the mount</span><span><i style="background:var(--accent)"></i>plugs</span><span><i style="background:var(--ok)"></i>spare</span></div>
     </div>
     <div class="state" id="state"><span class="dot"></span><span id="state-t"></span></div>
-    <div class="ctl"><label for="b">Mount border <output id="b-o"></output></label><input id="b" type="range" min="30" max="70" step="0.5"></div>
-    <div class="ctl"><label for="r">Plug reach past the monitor's edge <output id="r-o"></output></label><input id="r" type="range" min="15" max="50" step="0.5"></div>
-    <div class="ctl"><label for="z">Bezel on the plug side <output id="z-o"></output></label><input id="z" type="range" min="4" max="20" step="0.5"></div>
+    <div class="ctl"><label for="r">Plug reach past the monitor's edge <output id="r-o"></output></label><input id="r" type="range" min="10" max="50" step="0.5"></div>
+    <div class="ctl"><label for="s">Spare beyond the plug ends (tolerance) <output id="s-o"></output></label><input id="s" type="range" min="0" max="10" step="0.5"></div>
+    <div class="ctl"><label for="z">Black edge on the plug side <output id="z-o"></output></label><input id="z" type="range" min="4" max="20" step="0.1"></div>
     <div class="presets">
-      <button class="chip" id="p-order">To order (39&nbsp;mm)</button>
-      <button class="chip" id="p-min">Slimmest</button>
-      <button class="chip" id="p-first">First plan (55&nbsp;mm)</button>
+      <button class="chip" id="p-order">Back to the measured values</button>
     </div>
     <p class="sum" id="sum"></p>
   </aside>
 </div>
-<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border also has to hold the bezel and the plugs: border &ge; bezel &minus; 1 + plug reach + 2&nbsp;mm clearance (the opening overlaps the bezel by 1&nbsp;mm). <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 30&nbsp;mm plug reach with the right-angle connectors. <b>Measured 10 Oct:</b> the black edge is 5.3&nbsp;mm on the short side and 24&nbsp;mm along the long edge with the strip. The plugs leave by the short edge, so a 39&nbsp;mm border leaves 4.7&nbsp;mm between the plug ends and the wood.</p>
+<p class="notes"><b>How the sizes relate.</b> EasyFrame's size is the inside of the frame at the back: the backing board and the mount are cut to it. The 6&nbsp;mm lip covers the outer 6&nbsp;mm of the mount, so the white you see is the border less 6. On the plug side the border has to hold the black edge, the plugs and a spare: border = black edge &minus; 1 + plug reach + spare (the opening overlaps the black edge by 1&nbsp;mm), rounded up to a whole millimetre. The border follows the sliders. <b>Measured:</b> the moulding, the mount, the monitor's 12 and 7&nbsp;mm thickness, the 23&nbsp;mm plug reach with the right-angle connectors (remeasured 10 Oct). <b>Measured 10 Oct:</b> the black edge is 5.3&nbsp;mm on the short side and 24&nbsp;mm along the long edge with the strip. The plugs leave by the short edge.</p>
 </div>
 <script>
 const SLED=__SLED__, PI=__PI__;
@@ -194,8 +192,13 @@ const BEZ_TOP=5.3;             // measured on the short side, taken as the same 
 const THIN=7, SPINE=12, SPINE_W=30, MOUNT_T=1.5, BACK_T=3;
 const FACE=20, LIP=6, DEPTH=45, REBATE=40;
 const SLED_H=14.9;             // sled, Pi and its GPIO header
-const PRESET={order:{b:39,r:30,z:5.3},first:{b:55,r:30,z:5.3}};
+// r: plug reach, z: the black edge on the plug side, s: the spare wanted beyond the
+// plug ends. The border is worked out from them, never set by hand.
+const PRESET={order:{r:23,z:5.3,s:3}};
 let P={...PRESET.order};
+// opening edge to the wood on the plug side: the black edge less the opening's 1 mm
+// overlap, the plugs, the spare; rounded up to a whole millimetre for the order form
+const border=()=>Math.ceil(P.z-1+P.r+P.s-1e-9);
 const MAT={frame:'#5A3A26',mount:'#FBFBF9',body:'#212328',screen:'#0B1424',foam:'#F5F7F8',
   backing:'#B48858',brass:'#C9A24A',sled:'#2E3136',pcb:'#1E7A3C',plug:'#141414',cable:'#1A1A1A',
   cork:'#B78A5C',pic:'#0019A8',row:'#E9EBEE',min:'#F5A623'};
@@ -307,6 +310,7 @@ function build(cut){
 }
 // ------------------------------------------------------------ rendering
 const cv=document.getElementById('c');
+P.b=border();
 let cut=false,explode=0,dirty=true,rebuild=true,G=build(false);
 const VIEWS={front:[0,0],three:[-0.62,0.32],back:[Math.PI+0.5,0.25],top:[-0.12,1.2]};
 let yaw=VIEWS.three[0],pitch=VIEWS.three[1],zoom=1;
@@ -380,6 +384,7 @@ function loop(){if(dirty)draw();requestAnimationFrame(loop)}
 const $=id=>document.getElementById(id);
 const f1=x=>(Math.round(x*10)/10).toString();
 function update(){
+  P.b=border();
   G=build(cut);dirty=true;rebuild=true;
   const W=OPEN[0]+2*P.b,H=OPEN[1]+2*P.b,clear=P.b-(P.z-1)-P.r;
   $('o-frame').textContent=`${f1(W)} \u00d7 ${f1(H)} mm`;
@@ -401,17 +406,21 @@ function update(){
   $('o-depth').textContent=`${f1(used)} mm`;
   const st=$('state'),t=$('state-t');
   st.className='state '+(clear>=2?'ok':clear>=0?'warn':'bad');
-  t.innerHTML=clear>=2?`<b>The plugs fit.</b> ${f1(clear)} mm between the plug ends and the wood.`
-    :clear>=0?`<b>Tight.</b> Only ${f1(clear)} mm between the plug ends and the wood; the leads will press on it.`
-    :`<b>The plugs do not fit.</b> They reach ${f1(-clear)} mm into the wood. Make the border at least ${f1(P.z-1+P.r+2)} mm.`;
-  $('b-o').textContent=`${f1(P.b)} mm`;$('r-o').textContent=`${f1(P.r)} mm`;$('z-o').textContent=`${f1(P.z)} mm`;
-  $('sum').innerHTML=`Plug side: bezel ${f1(P.z)} \u2212 1 + plugs ${f1(P.r)} + clearance 2 = <code>${f1(P.z-1+P.r+2)} mm</code> slimmest border. The other three sides match it, so the picture stays centred.`;
-  for(const [id,key] of [['b','b'],['r','r'],['z','z']])$(id).value=P[key];
+  // the long edge with the 24 mm strip reaches 23 mm past the opening: it must clear the wood too
+  const chin=P.b-(BODY[1]-LIT[1]-BEZ_TOP-1);
+  if(chin<2){st.className='state bad';
+    t.innerHTML=`<b>The monitor does not fit.</b> Its 24 mm edge reaches ${f1(-chin+P.b)} mm past the opening, more than the ${f1(P.b)} mm border. Make the border at least ${f1(Math.ceil(P.b-chin+2))} mm.`}
+  else t.innerHTML=clear>=2?`<b>The plugs fit.</b> ${f1(clear)} mm between the plug ends and the wood; the monitor's 24 mm edge clears the wood by ${f1(chin)} mm.`
+    :`<b>Tight.</b> Only ${f1(clear)} mm between the plug ends and the wood; the leads will press on it.`;
+  $('r-o').textContent=`${f1(P.r)} mm`;$('s-o').textContent=`${f1(P.s)} mm`;$('z-o').textContent=`${f1(P.z)} mm`;
+  const raw=P.z-1+P.r+P.s;
+  $('sum').innerHTML=`Plug side: black edge ${f1(P.z)} \u2212 1 (the opening overlaps it) + plugs ${f1(P.r)} + spare ${f1(P.s)} = ${f1(raw)} mm`
+    +(Math.abs(raw-P.b)>1e-6?`, rounded up to <code>${f1(P.b)} mm</code> for the order form (so ${f1(clear)} mm spare).`:` = <code>${f1(P.b)} mm</code>.`)
+    +` The other three sides match it, so the picture stays centred. The spare covers the calipers reading to the glass edge, where the picture may start up to 1 mm further in, and room for the leads not to press on the wood.`;
+  for(const [id,key] of [['r','r'],['s','s'],['z','z']])$(id).value=P[key];
 }
-for(const [id,key] of [['b','b'],['r','r'],['z','z']])$(id).addEventListener('input',e=>{P[key]=+e.target.value;update()});
+for(const [id,key] of [['r','r'],['s','s'],['z','z']])$(id).addEventListener('input',e=>{P[key]=+e.target.value;update()});
 $('p-order').onclick=()=>{P={...PRESET.order};update()};
-$('p-min').onclick=()=>{P.b=P.z-1+P.r+2;update()};
-$('p-first').onclick=()=>{P={...PRESET.first};update()};
 $('cut').onclick=e=>{cut=!cut;e.currentTarget.setAttribute('aria-pressed',cut);update();
   if(cut){[yaw,pitch]=VIEWS.top;setView('top')}};
 $('ex').addEventListener('input',e=>{explode=+e.target.value;dirty=true;rebuild=true});

@@ -37,7 +37,7 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
 | WiFi hand-over flow | The setup screen draws on the Pi with the real name and a QR (9 Oct, `--png --setup`). Still unseen on a phone. |
 | Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
-| Frame and mount | Not ordered yet. **To order: 424 x 273 frame, 39 mm white mount, opening 346 x 195** (right-angle plugs, 30 mm, out of the short edge; Raoul 10 Oct). See "Physical build". |
+| Frame and mount | Not ordered yet. **To order: 408 x 257 frame, 31 mm white mount, opening 346 x 195** (right-angle plugs reach 23 mm out of the short edge; Raoul 10 Oct). See "Physical build". |
 
 ## Start here, on the Mac
 
@@ -495,7 +495,7 @@ In rough order:
    `Cancelled` in its place instead of vanishing, and the feed's notices are the
    status when TfL says Good Service (see "National Rail boards"). Raoul may want
    the cancelled row struck through or dimmed as well.
-5. The physical build (below): order the frame and mount (424 x 273, 39 mm white
+5. The physical build (below): order the frame and mount (408 x 257, 31 mm white
    border), print the sled, assemble.
 
 ## Physical build
@@ -542,15 +542,19 @@ which takes 10 mm off the width and height and adds no depth.
   Plugs out of a short edge: 5.3 - 1 + 30 + 2 = 36.3, so a **39 mm** border with
   2 mm spare: frame **424 x 273**, 33 mm of white showing, 452 x 301 outside.
   Plugs out of the 24 mm edge would have needed 55 mm. **They leave by the short
-  5.3 mm edge (Raoul, 10 Oct), so the order is a 39 mm border** (below).
+  5.3 mm edge (Raoul, 10 Oct).** Remeasured the same day, the right-angle plugs
+  reach **23 mm**, so with a 3 mm spare: 5.3 - 1 + 23 + 3 = 30.3, rounded up to a
+  **31 mm** border (3.7 mm spare at the plugs; the monitor's 24 mm edge clears the
+  wood by 8 mm).
   `case/frame_viewer.py` works these out for any numbers.
 
 **The order, as of 10 Oct** (not placed yet): EasyFrame 20 mm Brown Stain Frame,
-code 364453492 (the plain one, not BOX), **424 x 273 mm**; mount opening **346 x
-195**, borders **39 mm** all round, **white** (not 8065 Off White); No Glazing; MDF
+code 364453492 (the plain one, not BOX), **408 x 257 mm**; mount opening **346 x
+195**, borders **31 mm** all round, **white** (not 8065 Off White); No Glazing; MDF
 backing and hanging fixtures; extras 5 mm white foam board and 9 mm double-sided
-foam tape. 33 mm of white shows past the 6 mm lip; the frame is 452 x 301 outside;
-4.7 mm between the plug ends and the wood.
+foam tape. 25 mm of white shows past the 6 mm lip; the frame is 436 x 285 outside;
+3.7 mm between the plug ends and the wood. The 3D viewer works the border out from
+the plug reach, the black edge and the spare.
 - EasyFrame 40 mm Walnut Stain, code 311493492, 27 mm rebate, GBP 79.73 as
   configured: fits **only** with the Pi on the monitor's back; 80 mm larger
   outside.
