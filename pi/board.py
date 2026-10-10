@@ -450,7 +450,15 @@ def tidy_reason(reason, line):
     signal failure at Bounds Green. London Buses, Great Northern ... are accepting
     tickets via any reasonable route." On a wall we want the cause, not the line
     name we already show, and not the ticket-acceptance boilerplate."""
-    r = (reason or "").strip()
+    # A web address is nothing anyone can read off a wall, and TfL sends some
+    # reasons as nothing else: on 10 Oct 2026 Great Northern's whole reason was
+    # "https://www.nationalrail.co.uk/service-disruptions/...", and the line-name
+    # split below cut it at "https:" and scrolled "//www.nationalrail..." across
+    # the screen. Addresses go first, then any sentence that only points elsewhere.
+    r = re.sub(r"(?:https?://|www\.)\S+", "", (reason or "")).strip()
+    if rail:
+        r = " ".join(x for x in map(rail._news, re.split(r"(?<=[.!?])\s+", r)) if x)
+    r = re.sub(r"\s+([.,;:!?])", r"\1", r).strip(" .,;:-")
     if not r:
         return ""
     # drop the "<Line> Line: " prefix
@@ -481,10 +489,16 @@ def tidy_reason(reason, line):
     out = ". ".join(keep).rstrip(" .")
     # The severity is already on the line in colour, so drop that word - but keep
     # the "due to", which is what makes the line read as a sentence after the dash.
+    # Only when what follows carries on the sentence: "Reduced service due to..." reads
+    # as "- due to...", but "A reduced service is running between..." would be left as
+    # "- is running between...", so that one keeps its subject.
     for lead in ("Severe delays ", "Minor delays ", "Delays ", "Part suspended ",
                  "Suspended ", "Part closure ", "Part closed ", "Reduced service "):
         if out.lower().startswith(lead.lower()):
-            out = out[len(lead):]
+            rest = out[len(lead):]
+            if not re.match(r"(is|are|was|were|will|has|have|operates|operating|running|in operation)\b",
+                            rest, re.I):
+                out = rest
             break
     return out
 
@@ -549,6 +563,10 @@ def fetch(settings):
     # the orange bang rather than a green tick.
     if notice and (status_text is None or good_status(status_text)):
         status_text, status_ok, status_why = "Notice", True, notice
+    elif notice and not status_why:
+        # TfL reports trouble but gives no reason left to read (10 Oct 2026: "Special
+        # Service" with only a web address): the feed's own notice says what it is
+        status_why = notice
 
     groups = group(arrivals, settings["columns"])
     chains = [column_label(c, mine) for c, mine in groups]

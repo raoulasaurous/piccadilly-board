@@ -1721,6 +1721,40 @@ def test_both_ends():
           [(v["station_name"], v["line"]) for v in views])
 
 
+def test_reason_addresses():
+    print("\na reason that is only a web address")
+    url = "https://www.nationalrail.co.uk/service-disruptions/hertford-north-20261010/"
+    check("TfL's reason that is only an address leaves nothing to show",
+          board.tidy_reason(url, "great-northern") == "", board.tidy_reason(url, "great-northern"))
+    check("an address inside a reason is taken out, the news kept",
+          board.tidy_reason("GREAT NORTHERN: A reduced service is running between Moorgate and Stevenage. "
+                            "Latest information on the National Rail website " + url, "great-northern")
+          == "reduced service is running between Moorgate and Stevenage",
+          board.tidy_reason("GREAT NORTHERN: A reduced service is running between Moorgate and Stevenage. "
+                            "Latest information on the National Rail website " + url, "great-northern"))
+    check("a lead that carries on the sentence is still dropped",
+          board.tidy_reason("Reduced service due to a shortage of drivers.", "victoria") == "due to a shortage of drivers")
+    check("a line-name prefix still goes",
+          board.tidy_reason("Piccadilly Line: Minor delays due to an earlier signal failure.", "piccadilly")
+          == "due to an earlier signal failure", board.tidy_reason("Piccadilly Line: Minor delays due to an earlier signal failure.", "piccadilly"))
+    # TfL says Special Service with only an address; the feed's notice is the reason
+    saved = (board.requests, rail.requests)
+    def tfl(url_, params=None, timeout=None):
+        if "/Status" in url_:
+            return Resp([{"lineStatuses": [{"statusSeverity": 0, "statusSeverityDescription": "Special Service",
+                                            "reason": url}]}])
+        return board_get(url_, params, timeout)
+    board.requests = stub(tfl)
+    try:
+        v = views_for({"stations": [RAIL_STATION], "rail_api_key": "k-test"})[0]
+        cols, status, ok, why = board.fetch(v)
+    finally:
+        board.requests, rail.requests = saved
+    check("Special Service with only an address: TfL's word, the feed's notice as the reason",
+          status == "Special Service" and "http" not in why and "//" not in why
+          and why.startswith("Lifts at Highbury"), (status, why))
+
+
 def test_ticker():
     print("\na status too long for its line scrolls")
     import numpy as np
@@ -2480,6 +2514,7 @@ if __name__ == "__main__":
     test_views()
     test_rail_board()
     test_fetch_and_render()
+    test_reason_addresses()
     test_ticker()
     test_loop()
     test_outage()
