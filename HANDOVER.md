@@ -27,8 +27,8 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Area | State |
 |---|---|
 | `main` | PRs #1-#4, then the 7 Oct rail fixes and the 9 Oct screen changes (below), all pushed. |
-| **What the Pi runs** | **`main`, installed 10 Oct evening**, and from then on by the nightly updater (`tubeboard-update.timer`, about 04:00): whatever is merged to `main` is on the wall the next morning. `cat /opt/tubeboard/VERSION` says which commit. Dated backups: `/opt/tubeboard.bak-2026-10-09` (pre-PR-#1), `-10-10`. |
-| The Pi itself | Plugged in at Raoul's; online on 10 Oct. `throttled=0x0`. Its health file (`/run/tubeboard/health.json`) said 3 of 3 boards fetched, no failed draws, after the 10 Oct install. |
+| **What the Pi runs** | **`main`, installed 10 Oct evening**, and from then on by the nightly updater (`tubeboard-update.timer`, about 04:00): whatever is merged to `main` is on the wall the next morning. `cat /opt/tubeboard/VERSION` says which commit. **The updater's first real run, 11 Oct 14:39** (a catch-up: the Pi was off at 04:00): installed d8dac46 in 34 s, watched the board for 180 s through the settings card and all three boards, kept it. Dated backups: `/opt/tubeboard.bak-2026-10-09` (pre-PR-#1), `-10-10`. |
+| The Pi itself | Plugged in at Raoul's; online on 10 Oct. Unplugged that night with no shutdown and back on 11 Oct: at boot fsck mended the boot partition's dirty bit, and the board came up with 3 of 3 boards. `throttled=0x0`. Its health file (`/run/tubeboard/health.json`) said 3 of 3 boards fetched, no failed draws, after the 10 Oct install. |
 | On the screen | Arsenal (Piccadilly), Highbury & Islington (Victoria), Drayton Park (Great Northern, National Rail), 30 s each. All three draw both columns, checked with `--explain` and from the framebuffer. |
 | National Rail key | Raoul's raildata.org.uk account, Live Departure Board product. Saved on the Pi in `/opt/tubeboard/settings.json`; not in the repo. |
 | Tested | 399 offline checks (`pi/test_rotation.py`, the updater's and the hand-over check's included), 44 in headless Chrome (`test_index.py`). Every 9-10 Oct change reviewed by an independent reviewer, each finding verified, the confirmed ones fixed. Seen on the real screen 10 Oct: the rotation, the coloured dots, four rows, the scroll, the rail board's notice. |
@@ -36,8 +36,8 @@ else). It will hang on a wall in a deep box frame with a card mount and no glass
 | Brightness and night dimming | Works, over the HDMI cable (DDC/CI) |
 | Remote access | Pi Connect (remote shell), from anywhere. SSH from Raoul's Mac on the same WiFi: `ssh locklinestudio@tubeboard.local` worked on 9 Oct, which is how the 9 Oct deploys were done. |
 | WiFi hand-over flow | **10 Oct, Raoul: the settings QR code scans and the settings page works from a phone.** The setup screen (the hotspot's join QR) draws on the Pi with the real name (9 Oct) but has not been tried on a phone: it only shows with no WiFi, so that is hand-over step 1. `sudo python3 /opt/tubeboard/portal.py --handover-check` on 10 Oct: 2 saved WiFi networks, console password last changed June (reset needed), Pi Connect signed in, 1 SSH key (Raoul's, kept), hotspot name right, rail key saved, updater on. |
-| Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. |
-| Frame and mount | Not ordered yet. **To order: 408 x 257 frame, 31 mm white mount, opening 346 x 195** (right-angle plugs reach 23 mm out of the short edge; Raoul 10 Oct). See "Physical build". |
+| Pi mounting sled (CAD) | Designed 17 Sept, not printed. `case/sled.3mf` (sled and clamp, flat on the bed) made 7 Oct. **Do not print it yet:** the 11 Oct check found two faults (see "Before assembly"). |
+| Frame and mount | **Ordered 11 Oct (Raoul, GBP 41.68): 408 x 257 frame, Snow White mount, aperture 340 x 189**, so no black edge shows. See "Physical build" for the order and what to sort out before assembly. |
 
 ## Start here, on the Mac
 
@@ -495,17 +495,21 @@ In rough order:
    `Cancelled` in its place instead of vanishing, and the feed's notices are the
    status when TfL says Good Service (see "National Rail boards"). Raoul may want
    the cancelled row struck through or dimmed as well.
-5. The physical build (below): order the frame and mount (408 x 257, 31 mm white
-   border), print the sled, assemble.
+5. The physical build (below): the frame and mount are ordered (11 Oct). Work
+   through "Before assembly", then print the sled and assemble.
 
 ## Physical build
 
-**How it is held** (agreed with Raoul): no glass. The mount presses on the
-frame's lip. The monitor lies face down on the mount on foam tape. The EasyFrame
-6 mm spacer ring and 5 mm foam bring the perimeter level with the monitor's
-thicker spine. The backing board sits behind the screen, held by six turn
-buttons. The Pi sits on the sled, screwed to the backing board. Cork bumpers
-hold the frame 5 mm off the wall.
+**How it is held** (agreed with Raoul; the 11 Oct check changed the packing and
+the fixings): no glass. The mount presses on the frame's lip. The monitor lies
+face down on the mount on foam tape. Packing round the monitor, about 13 mm thick
+(the 12 mm thick part plus the tape), holds the card flat on the lip; 5 mm of
+foam board behind the thin part brings it level. The backing board sits behind
+the screen about 23 mm in from the frame's back face, so turn buttons cannot
+reach it: hold it with push-in framing points in the rebate wall, or offset clips
+with a 23 mm drop. The leads leave through a notch in the backing on the plug
+side. The Pi sits on the sled, fixed to the backing board. Cork bumpers, fully on
+the wood (about 7 mm in from the outside edge), hold the frame 5 mm off the wall.
 
 **The sled** (`case/sled.py`) is a tray, not a box. It screws to the **backing
 board, never to the monitor**. Footprint 73 x 64 mm, height 14.9 mm with the Pi
@@ -539,8 +543,8 @@ which takes 10 mm off the width and height and adds no depth.
   opening's 1 mm overlap, the plugs and a clearance. Raoul measured the black
   edge on 10 Oct: **5.3 mm on the short sides, 24.0 mm along the long edge with
   the strip** (the listing's 368 mm width was wrong; the body is about 355 x 223).
-  Plugs out of a short edge: 5.3 - 1 + 30 + 2 = 36.3, so a **39 mm** border with
-  2 mm spare: frame **424 x 273**, 33 mm of white showing, 452 x 301 outside.
+  Plugs out of a short edge at 30 mm: 5.3 - 1 + 30 + 2 = 36.3, so a 37 mm border
+  (the 39 mm, 424 x 273 figure of that day was a slip; both are superseded).
   Plugs out of the 24 mm edge would have needed 55 mm. **They leave by the short
   5.3 mm edge (Raoul, 10 Oct).** Remeasured the same day, the right-angle plugs
   reach **23 mm**, so with a 3 mm spare: 5.3 - 1 + 23 + 3 = 30.3, rounded up to a
@@ -548,15 +552,26 @@ which takes 10 mm off the width and height and adds no depth.
   wood by 8 mm).
   `case/frame_viewer.py` works these out for any numbers.
 
-**The order, as of 10 Oct** (not placed yet): EasyFrame 20 mm Brown Stain Frame,
-code 364453492 (the plain one, not BOX), **408 x 257 mm**; mount opening **346 x
-195**, borders **31 mm** all round, **white** (not 8065 Off White); No Glazing; MDF
-backing and hanging fixtures; extras 5 mm white foam board and 9 mm double-sided
-foam tape. 25 mm of white shows past the 6 mm lip; the frame is 436 x 285 outside;
-3.7 mm between the plug ends and the wood. The 3D viewer works the border out from
-the plug reach, the black edge and the spare.
+**Ordered 11 Oct (Raoul), GBP 41.68:** EasyFrame 20 mm Brown Stain Frame, code
+364453492 (the plain one, not BOX), frame **408 x 257 mm**. EasyFrame's size field
+is the *artwork* size: typed **346 x 195** with the default "To Take" setting,
+which cuts the aperture 3 mm smaller each side, so the aperture is **340 x 189**.
+That covers about 2 mm of the picture on every side, on purpose: Raoul wants no
+black edge to show at all, and the board draws nothing there (the text is 8.6 mm
+in from each edge, the QR code's modules 4.2 mm up from the bottom). Borders typed
+**31 mm**, which EasyFrame counts from the 346 x 195, so the card is 34 mm from
+the aperture to its edge and about 28 mm of white shows past the 6 mm lip
+(26-29 mm in practice: EasyFrame cuts the frame 2-4 mm larger inside). Mount
+**8001 Snow White** (1.4 mm, white core, white bevel). No Glazing; 2.5 mm MDF
+backing and hanging fixtures; one 5 mm white foam board; 9 mm double-sided foam
+tape, 10 m. About 3.6 mm between the plug ends and the wood, and 7.7 mm below the
+24 mm edge: the same as the 346 x 195 plan, because the aperture shrank by as
+much as the card grew. The 3D viewer still shows the 346 x 195 plan.
+
+The other frames found, not ordered:
+
 - EasyFrame 40 mm Walnut Stain, code 311493492, 27 mm rebate, GBP 79.73 as
-  configured: fits **only** with the Pi on the monitor's back; 80 mm larger
+  configured: fits **only** with the Pi on the monitor's back; 40 mm larger
   outside.
 - eFrame Extra Deep Dark Box (wenge, 36 mm rebate, GBP 61) and Wenge Extra Deep
   Flat (35 mm, GBP 52): the darkest found.
@@ -567,28 +582,40 @@ EasyFrame supplies D-rings and screws with mouldings 18 mm or wider; nothing
 extra is needed to hang it. The "coloured backing board" option is a solid card
 with no opening: leave it off.
 
-### Still to measure
+### Before assembly (from the 11 Oct check of the order)
 
-1. ~~The screen's thickness at its thick socket edge.~~ 12 mm, 7 Oct (above).
-   The notes from before: add 19.4 for the sled, or 15.4 for the Pi on tape. Stack 28 or under: EasyFrame 20 mm Walnut Stain,
-   code 307453492 (a *Picture* Frame on the site, 28 mm rebate),
-   https://www.easyframe.co.uk/Item/307453492. 28 to 32: still walnut, the
-   bumpers hide it. Over 32: 20 mm Brown Stain Box Frame, code 364453492BOX,
-   40 mm rebate, https://www.easyframe.co.uk/Item/364453492BOX. Checked 6 Oct:
-   the 40 mm Walnut Box (27 mm rebate) and the 22 mm Walnut Foil Box (17 mm) are
-   both shallower, so brown is the deep option, not a deeper walnut. Prices
-   quoted 19 Sept for 457 x 305 with the 6 mm spacer: GBP 55.61 / 60.64.
-2. **Connector reach** past the monitor's edge with the leads in, cables lying
-   as they want. Under 40 mm: nothing. 40 to 50: mini-HDMI pigtail,
-   amazon.co.uk/dp/B09X1L94S8. Over 50: a right-angle mini-HDMI adapter. USB-C
-   long too: right-angle USB-C 2-pack, amazon.co.uk/dp/B0CBTWJ1YS. The monitor
-   end is **mini-HDMI (type C), not micro**.
-3. **Palm test.** After an hour at 100%, a palm on the screen front for ten
+1. **The mini-HDMI plug.** Only the USB-C right-angle 2-pack (B0CBTWJ1YS) is on
+   record. Both plugs, with their leads in and bent as they will lie, must reach
+   23 mm or less past the body edge; 26 mm is the hard limit. A straight
+   mini-HDMI plug reaches about 40 mm and does not fit. The monitor end is
+   **mini-HDMI (type C), not micro**.
+2. **Where the 12 mm thick part is.** The Yodoit manual draws it as a band along
+   the bottom edge, with the ports low on the plug edge, near the strip. The
+   viewer's 30 mm strip down the plug edge (`SPINE_W`) is an assumption. Measure
+   how far the thick part reaches up from the bottom, the height of the ports,
+   and which way each right-angle plug sends its cable (back or up is fine; down
+   must bend inside about 8 mm).
+3. **Packing.** About 13 mm round the monitor and 5 mm behind the thin part. One
+   5 mm foam board is on the order: buy two more (EasyFrame sells them alone,
+   about GBP 3.60) or print spacers. Measure the tape's thickness when it arrives
+   and trim the packing to the thick part plus the tape.
+4. **The backing fixings** for 23 mm deep (above). EasyFrame ships the backing on
+   flexible tabs at its own depth: bend them back.
+5. **The sled has two faults. Do not print `case/sled.3mf` yet.** On a Pi 3 A+
+   the microSD is under the short edge opposite the USB-A port, not under the
+   GPIO edge, so a rail blocks the card. The clamp bar lands on the Pi's own HDMI
+   socket. Hold the leads with a stick-on cable clip 30-40 mm from the sockets
+   instead. Put the sled over the thin part; a screw through the backing must
+   stop short of the monitor (sled base + MDF = 4.5 mm), or use VHB tape. Leave
+   60 mm in front of the Pi's HDMI socket, or turn the sled so the sockets face
+   along the frame.
+6. **The tape is 9 mm wide**; the black edge is 5.3 mm at the sides and the top.
+   Cut it to 5 mm there, full width on the 24 mm bottom strip, and keep it off
+   the picture.
+7. **When the frame arrives,** measure its inside at the back and centre the
+   mount with card shims in the gaps.
+8. **Palm test.** After an hour at 100%, a palm on the screen front for ten
    seconds. Comfortable or not.
-
-Then the mount from Southbank Art (custom window mount, 1.5 mm board,
-https://southbankart.co.uk/products/custom-window-mount): 457 x 305, opening
-**346 x 195**, **untick the 3 mm overlap**.
 
 ## Parts
 
@@ -597,7 +624,10 @@ https://southbankart.co.uk/products/custom-window-mount): 457 x 305, opening
   micro-USB (B00WEVG57K), the HDMI lead from the monitor's box.
 - **Retired, do not reuse for power:** the kenable 12 W charger, the INIU 2 m
   lead, the RIIEYOCA splitter.
-- **Still to buy:** the frame, the mount, maybe the pigtail. Optional white
+- **Ordered 11 Oct:** the frame and the mount (EasyFrame, above).
+- **Still to buy:** a right-angle mini-HDMI adapter if the plug is straight
+  (above); two more 5 mm foam boards or printed spacers; push-in framing points
+  or 23 mm offset clips; 5 mm cork bumpers; a stick-on cable clip. Optional white
   braided sleeve, amazon.co.uk/dp/B09PG6JYPW.
 - Zero / Zero 2 W boards are sold out until 2027. A Pico or ESP32 cannot drive
   this monitor. Do not revisit the brain choice.
